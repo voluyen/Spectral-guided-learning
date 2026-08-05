@@ -1,0 +1,15 @@
+# Phase 5: Vanilla SFT baseline (supervises every response token)
+# Hyperparameters follow paper Table 3, except cutoff (16k vs 32k) for single-GPU fit.
+model_name: Qwen/Qwen3-1.7B-Base
+data_path: data/train-vanilla.jsonl
+output_dir: checkpoints/vanilla
+
+epochs: 6
+learning_rate: 5.0e-5
+min_learning_rate: 1.0e-5      # cosine_with_min_lr
+warmup_ratio: 0.1
+per_device_batch_size: 1
+gradient_accumulation_steps: 32   # global batch 32; Z summed over the whole step (Eq. 9)
+attn_implementation: sdpa         # flash_attention_2 on server if the build works
+seed: 42
+logging_steps: 5

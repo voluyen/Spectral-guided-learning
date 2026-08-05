@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+data/
+checkpoints/
+results/raw/
+*.npz
+*.pt
+*.parquet
+.pytest_cache/
+logs/
+
+# Local agent tooling (ClaudeKit) — not part of the reproduction code
+.claude/
