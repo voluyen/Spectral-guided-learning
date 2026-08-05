@@ -4,8 +4,8 @@ torch>=2.6
 transformers>=4.56      # Qwen3 support; `dtype=` arg (replaces torch_dtype)
 datasets>=2.20
 accelerate>=1.0
-numpy
-pandas
+numpy>=2.0              # pandas wheels are built against numpy 2; numpy 1.x raises a dtype ABI error
+pandas>=2.2
 pyarrow
 pyyaml
 math-verify
