@@ -68,7 +68,10 @@ so the mask stays the only difference between them.
 | Data | 10k samples | ~2k | compute budget |
 | Cutoff | 32k | 16k | memory at full fine-tuning |
 | Framework | Llama-Factory | custom HF Trainer | token-level masking needs custom loss |
-| Energy threshold p | 0.95 | 0.95 (paper value) | — |
+| k\* energy cutoff (Eq. 4) | 0.95 | 0.95 | matches Figure 2 |
+| Step threshold p (Eq. 8) | not published | 0.95 (our choice) | absent from Table 3 and §3.2 |
+| CoT trajectories | regenerated with DeepSeek-R1-0528 | AceReason's own `output` field | avoids a 10k-sample R1 inference run |
+| Loss normalizer Z (Eq. 9) | per sequence, as written | per optimizer step (all microbatches) | matches Llama-Factory/HF token-mean behaviour; avoids over-weighting sparsely masked sequences |
 | Step segmentation | "standardized" | sentence-boundary regex split, no merging | not specified in the paper |
 
 Absolute accuracies will not match Table 1; the target is the **trend** (Spectral ≥ Vanilla with fewer
