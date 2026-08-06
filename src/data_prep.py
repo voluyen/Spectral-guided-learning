@@ -10,23 +10,39 @@ recovered exactly by decoding input_ids[token_start:token_end] (round-trip asser
 import argparse
 import json
 import statistics
+import unicodedata
 from pathlib import Path
 
 import yaml
 from datasets import load_dataset
+from tqdm import tqdm
 from transformers import AutoTokenizer
 
-from segmentation import segment_response_token_spans
+from segmentation import encode_with_offsets, step_token_spans
 
 PROMPT_TEMPLATE = "{problem}\n\nPlease reason step by step, and put your final answer within \\boxed{{}}.\n\n"
 SHUFFLE_BUFFER = 10_000
 
 
-def build_record(tokenizer, problem: str, response: str) -> dict:
-    """Tokenize one problem/response pair and map its steps to absolute token spans."""
+def build_record(tokenizer, problem: str, response: str, max_tokens: int) -> dict | None:
+    """Tokenize one problem/response pair and map its steps to absolute token spans.
+
+    Returns None when the sample exceeds `max_tokens`, so over-length samples — the most
+    expensive ones — are rejected right after tokenizing, before any span mapping.
+    """
+    # The tokenizer normalizes to NFC internally, so normalize before storing the text:
+    # AceReason contains decomposed forms (U+2261 + U+0338 for "≢") that the ids collapse
+    # to one codepoint, which would leave `response` unrecoverable from its own token span.
+    problem = unicodedata.normalize("NFC", problem)
+    response = unicodedata.normalize("NFC", response)
+
     prompt = PROMPT_TEMPLATE.format(problem=problem)
     prompt_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
-    response_ids, step_spans = segment_response_token_spans(tokenizer, prompt_ids, response)
+    response_ids, token_starts = encode_with_offsets(tokenizer, response)
+    if len(prompt_ids) + len(response_ids) > max_tokens:
+        return None
+
+    step_spans = step_token_spans(response, token_starts, offset=len(prompt_ids))
     input_ids = prompt_ids + response_ids
     return {
         "prompt": prompt,
@@ -85,6 +101,42 @@ def log_stats(records: list[dict]) -> None:
     print(f"tokens/step   : mean={statistics.mean(step_lengths):.1f} {percentiles(step_lengths)}")
 
 
+def collect_records(tokenizer, config: dict, limit_scan: int) -> tuple[list[dict], dict]:
+    """Scan the shuffled stream until n_samples records pass both filters.
+
+    The bar tracks accepted records; its postfix carries the rejection counts, since a
+    stalled bar with a climbing `scanned` means the filters are eating the corpus.
+    """
+    # The stream yields nothing until datasets fills its shuffle buffer (SHUFFLE_BUFFER
+    # rows downloaded), so warn before the bar sits at 0 and looks hung.
+    print(f"buffering {SHUFFLE_BUFFER:,} rows for the shuffled stream (network-bound)...", flush=True)
+
+    records, counts = [], {"scanned": 0, "skipped_long": 0, "skipped_few_steps": 0}
+    progress = tqdm(total=config["n_samples"], unit="sample", desc="segmenting")
+    for problem, response in iter_samples(config):
+        counts["scanned"] += 1
+        if counts["scanned"] > limit_scan or len(records) >= config["n_samples"]:
+            break
+
+        record = build_record(tokenizer, problem, response, config["max_tokens"])
+        if record is None:
+            counts["skipped_long"] += 1
+        # elif len(record["steps"]) < 2:  # nothing to select between
+        #     counts["skipped_few_steps"] += 1
+        else:
+            record["id"] = len(records)
+            records.append(record)
+            # Every record, not a sample: the whole pass costs ~3s against a ~60s run.
+            if not verify_span_alignment(tokenizer, record):
+                raise RuntimeError(f"step span round-trip failed on record {record['id']}")
+            progress.update(1)
+        # Redraw on rejected rows too (throttled), else a long reject streak looks frozen.
+        progress.set_postfix(counts, refresh=counts["scanned"] % 50 == 0)
+
+    progress.close()
+    return records, counts
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/data-config.yaml")
@@ -93,25 +145,7 @@ def main() -> None:
 
     config = yaml.safe_load(Path(args.config).read_text())
     tokenizer = AutoTokenizer.from_pretrained(config["tokenizer"])
-
-    records, scanned, skipped_long, skipped_few_steps = [], 0, 0, 0
-    for problem, response in iter_samples(config):
-        scanned += 1
-        if scanned > args.limit_scan or len(records) >= config["n_samples"]:
-            break
-
-        record = build_record(tokenizer, problem, response)
-        if record["n_tokens"] > config["max_tokens"]:
-            skipped_long += 1
-            continue
-        if len(record["steps"]) < 2:  # nothing to select between
-            skipped_few_steps += 1
-            continue
-
-        record["id"] = len(records)
-        records.append(record)
-        if len(records) <= 20 and not verify_span_alignment(tokenizer, record):
-            raise RuntimeError(f"step span round-trip failed on record {record['id']}")
+    records, counts = collect_records(tokenizer, config, args.limit_scan)
 
     output_path = Path(config["output_path"])
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -120,7 +154,7 @@ def main() -> None:
             handle.write(json.dumps(record) + "\n")
 
     print(f"wrote {len(records)} samples -> {output_path}")
-    print(f"scanned={scanned} skipped_long={skipped_long} skipped_few_steps={skipped_few_steps}")
+    print(" ".join(f"{name}={value}" for name, value in counts.items()))
     log_stats(records)
 
 

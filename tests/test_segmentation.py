@@ -1,14 +1,36 @@
 """Segmentation tests use a whitespace-free character tokenizer so token offsets are
 exactly predictable; the real-tokenizer round-trip is checked by data_prep.py itself."""
 
+import re
+
 from segmentation import segment_response_token_spans, split_into_step_texts
 
 
 class CharTokenizer:
     """Minimal stand-in: one token per character."""
 
-    def __call__(self, text, add_special_tokens=False):
-        return {"input_ids": [ord(character) for character in text]}
+    def __call__(self, text, add_special_tokens=False, return_offsets_mapping=False):
+        encoding = {"input_ids": [ord(character) for character in text]}
+        if return_offsets_mapping:
+            encoding["offset_mapping"] = [(i, i + 1) for i in range(len(text))]
+        return encoding
+
+
+class MergingTokenizer:
+    """Stand-in for byte-level BPE: whitespace merges into the word that follows it.
+
+    Reproduces the property that makes piecewise tokenization wrong — tokenizing " Foo"
+    yields one token, but tokenizing " " and "Foo" separately yields two.
+    """
+
+    _PRETOKEN = re.compile(r"\s*\S+|\s+")
+
+    def __call__(self, text, add_special_tokens=False, return_offsets_mapping=False):
+        matches = list(self._PRETOKEN.finditer(text))
+        encoding = {"input_ids": [hash(m.group()) % 50000 for m in matches]}
+        if return_offsets_mapping:
+            encoding["offset_mapping"] = [(m.start(), m.end()) for m in matches]
+        return encoding
 
 
 def test_split_preserves_original_text():
@@ -73,3 +95,31 @@ def test_unsplittable_response_yields_single_span():
     tokenizer = CharTokenizer()
     _, spans = segment_response_token_spans(tokenizer, [], "one long line without boundaries")
     assert len(spans) == 1
+
+
+def test_ids_are_the_canonical_tokenization_not_a_piecewise_concat():
+    """Guards the whole point of offset-based mapping: the model must see the same ids a
+    plain tokenizer call produces, not ids stitched together from separately encoded steps."""
+    tokenizer = MergingTokenizer()
+    response = "First step is done. Second step follows. Third step ends it."
+
+    response_ids, _ = segment_response_token_spans(tokenizer, [], response)
+
+    canonical = tokenizer(response)["input_ids"]
+    piecewise = sum(
+        (tokenizer(piece)["input_ids"] for piece in split_into_step_texts(response)), []
+    )
+    assert response_ids == canonical
+    assert len(piecewise) > len(canonical)  # the bug this test exists to prevent
+
+
+def test_spans_stay_contiguous_when_a_token_straddles_a_boundary():
+    tokenizer = MergingTokenizer()
+    response = "First step is done. Second step follows. Third step ends it."
+
+    response_ids, spans = segment_response_token_spans(tokenizer, [3, 4], response)
+
+    assert len(spans) == 3
+    assert spans[0][0] == 2 and spans[-1][1] == 2 + len(response_ids)
+    for previous, following in zip(spans, spans[1:]):
+        assert previous[1] == following[0]
