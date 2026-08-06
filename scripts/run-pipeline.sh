@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Full reproduction pipeline. Run on the GPU server, one stage at a time.
 #
-#   ./scripts/run-pipeline.sh data      # phase 2: ~30 min, CPU + network
+#   ./scripts/run-pipeline.sh data      # phase 2: network-bound, CPU (tokenizing is minutes)
 #   ./scripts/run-pipeline.sh capture   # phase 3: ~2-4 h GPU
 #   ./scripts/run-pipeline.sh masks     # phase 4: seconds, CPU (p=0.95 fixed)
 #   ./scripts/run-pipeline.sh train     # phase 5: ~10-20 h GPU per run, x2
