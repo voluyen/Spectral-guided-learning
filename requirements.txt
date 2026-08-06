@@ -8,6 +8,7 @@ numpy>=2.0              # pandas wheels are built against numpy 2; numpy 1.x rai
 pandas>=2.2
 pyarrow
 pyyaml
+tqdm                    # progress bars (already a transformers dep; pinned here as a direct one)
 math-verify
 pytest
 # GPU-server only (skip on local CPU machine):
