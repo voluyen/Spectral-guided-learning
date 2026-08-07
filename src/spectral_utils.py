@@ -3,6 +3,7 @@
 Pure-torch, device-agnostic, unit-testable on CPU. All computations in float32.
 """
 
+import time
 from dataclasses import dataclass
 
 import torch
@@ -47,6 +48,7 @@ class SpectralResult:
     k_star: int
     singular_values: torch.Tensor  # (r,) float32 on CPU
     step_strengths: list[float]
+    svd_seconds: float = 0.0  # wall time of the SVD call alone (the paper never reports this)
 
 
 def analyze_gradient_matrix(
@@ -56,15 +58,26 @@ def analyze_gradient_matrix(
 ) -> SpectralResult:
     """SVD of G (T x d) -> k* at energy_cutoff -> step-level spectral strengths.
 
-    SVD runs in float32 on G's device; results returned on CPU.
+    SVD runs in float32 on G's device; results returned on CPU. `svd_seconds` isolates the
+    SVD call's wall time, synchronizing the CUDA stream around it so the number reflects the
+    real device compute rather than async-launch latency.
     """
     g32 = gradient_matrix.float()
+    on_cuda = g32.is_cuda
+    if on_cuda:
+        torch.cuda.synchronize()
+    svd_start = time.perf_counter()
     # full_matrices=False: U is (T, r), r = min(T, d) — leverage needs only top-k* columns
     u_matrix, singular_values, _ = torch.linalg.svd(g32, full_matrices=False)
+    if on_cuda:
+        torch.cuda.synchronize()
+    svd_seconds = time.perf_counter() - svd_start
+
     k_star = effective_rank(singular_values, energy_cutoff)
     leverage = token_leverage_scores(u_matrix, k_star)
     return SpectralResult(
         k_star=k_star,
         singular_values=singular_values.cpu(),
         step_strengths=step_spectral_strengths(leverage.cpu(), step_spans),
+        svd_seconds=svd_seconds,
     )

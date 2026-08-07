@@ -6,6 +6,7 @@
 # Usage (run ONE stage at a time; check the gates between them):
 #   bash scripts/run-on-modal.sh setup          # install deps + sanity-check GPU/HF (run once)
 #   bash scripts/run-on-modal.sh data           # phase 2  (CPU, ~15 min)  -> data/train-2k-segmented.jsonl
+#   bash scripts/run-on-modal.sh capture-test 20 # phase 3 test (GPU): SVD timing on N samples
 #   bash scripts/run-on-modal.sh capture        # phase 3  (GPU, ~2-4 h)   -> data/spectral-strengths.parquet
 #   bash scripts/run-on-modal.sh masks-sweep    # phase 4 gate: pick p (CPU, seconds)
 #   bash scripts/run-on-modal.sh masks          # phase 4  (CPU) -> train-{vanilla,spectral}.jsonl
@@ -68,6 +69,14 @@ case "${1:-}" in
     python src/data_prep.py --config configs/data-config.yaml 2>&1 | tee logs/data-prep.log
     ;;
 
+  capture-test)
+    # quick sanity + SVD-timing run on a few samples BEFORE the full corpus. Prints per-sample
+    # gradient vs SVD wall time so you can size phase 3 (the paper never publishes SVD cost).
+    # Optional 2nd arg = number of samples (default 20):  bash run-on-modal.sh capture-test 30
+    require_gpu
+    python src/gradient_capture.py --config configs/capture-config.yaml --verify --limit "${2:-20}" 2>&1 | tee logs/capture-test.log
+    ;;
+
   capture)
     # phase 3: GPU. --verify asserts analytic gradient == autograd before spending GPU hours.
     require_gpu
@@ -120,7 +129,7 @@ case "${1:-}" in
     ;;
 
   *)
-    sed -n '3,24p' "$0"   # print the usage/notes block
+    sed -n '3,25p' "$0"   # print the usage/notes block
     exit 1
     ;;
 esac
