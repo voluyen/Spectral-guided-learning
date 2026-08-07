@@ -42,8 +42,19 @@ def to_gradient_rows(step_spans: list[tuple[int, int]], response_start: int) -> 
 
 
 @torch.no_grad()
-def verify_against_autograd(model, input_ids: torch.Tensor, span: tuple[int, int]) -> float:
-    """Max absolute deviation between analytic and autograd gradients (float32)."""
+def verify_against_autograd(
+    model, input_ids: torch.Tensor, span: tuple[int, int], max_positions: int = 512
+) -> float:
+    """Max absolute deviation between analytic and autograd gradients (float32).
+
+    The autograd reference materializes a full (N x V) fp32 logits matrix and its backward
+    graph; at N ~ 16k response tokens and V ~ 152k that is ~10 GB each, enough to OOM a 40 GB
+    GPU. The identity is per-position, so the span is capped to the first `max_positions`
+    targets — just as conclusive, at bounded memory. The main capture path is unaffected (it
+    chunks the unembedding), so only this check needed the cap.
+    """
+    start, end = span
+    span = (start, min(end, start + max_positions))
     with torch.enable_grad():
         hidden = model.model(input_ids=input_ids).last_hidden_state[0].detach().float()
         hidden.requires_grad_(True)
