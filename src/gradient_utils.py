@@ -74,17 +74,22 @@ def capture_sequence_gradients(
     input_ids: torch.Tensor,
     target_span: tuple[int, int],
     chunk_size: int = 1024,
+    unembedding: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Forward one sequence and return its gradient matrix G over the supervised span.
 
     Uses model.model(...) to skip the lm_head projection over all positions; the
     unembedding is applied chunk-wise inside analytic_hidden_gradients instead.
+
+    unembedding: pass a pre-cast (float32) unembedding to reuse it across a corpus run;
+    when None it is fetched from the model each call (the analytic_hidden_gradients
+    .float() is then a no-op on an already-float32 tensor, so results are unchanged).
     """
     if input_ids.dim() == 1:
         input_ids = input_ids.unsqueeze(0)
+    if unembedding is None:
+        unembedding = model.get_output_embeddings().weight
 
     hidden = model.model(input_ids=input_ids).last_hidden_state[0]  # (T, d), post-norm
     rows, targets = shift_for_causal_lm(hidden, input_ids[0], target_span)
-    return analytic_hidden_gradients(
-        rows, targets, model.get_output_embeddings().weight, chunk_size=chunk_size
-    )
+    return analytic_hidden_gradients(rows, targets, unembedding, chunk_size=chunk_size)
