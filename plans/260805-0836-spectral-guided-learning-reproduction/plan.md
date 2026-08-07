@@ -27,14 +27,14 @@ Scope: method pipeline only — NO analysis figs (2-4), NO full Table 1.
 ## Current State (2026-08-05)
 
 **All pipeline code is written and validated on CPU.** GPU stages wait on server availability.
-Run stages with `./scripts/run-pipeline.sh {data|capture|masks|smoke|train|eval}`.
+Run stages with `./scripts/run-pipeline.sh {data|capture|masks-sweep|masks|smoke|train|eval}`.
 
 | # | Phase | Code | Verified locally | Remaining (needs GPU/server) |
 |---|-------|------|------------------|------------------------------|
 | 1 | [Environment](phase-01-environment-setup.md) | ✅ | local CPU venv, 48 tests green | server env, code sync method |
 | 2 | [Data prep](phase-02-data-preparation.md) | ✅ | ran on real AceReason samples; span round-trip passes | full 2k run |
 | 3 | [Gradient capture](phase-03-gradient-capture-spectral-analysis.md) | ✅ | **analytic == autograd, max diff 3.7e-9**; CLI ran on real data | 2k samples w/ real 1.7B |
-| 4 | [Step selection](phase-04-step-selection-masks.md) | ✅ | mask emission at p=0.95 on real data | rerun on real strengths |
+| 4 | [Step selection](phase-04-step-selection-masks.md) | ✅ | mask emission + `--sweep` tested on real data; p=0.95 is a starting point, not yet chosen via sweep on real strengths | rerun sweep + emission on real 1.7B strengths |
 | 5 | [Masked SFT](phase-05-masked-sft-training.md) | ✅ | Trainer trained a tiny model; masked loss == vanilla CE when unmasked | 2 full runs |
 | 6 | [Evaluation](phase-06-evaluation-benchmarks.md) | ✅ | scoring + rescore path tested | vLLM generation, 10 runs |
 | 7 | [Results report](phase-07-results-report.md) | — | — | after eval |
@@ -59,9 +59,13 @@ Run stages with `./scripts/run-pipeline.sh {data|capture|masks|smoke|train|eval}
 - **k\* on the real model** (phase 3): local numbers used a randomly initialized tiny model, so they say
   nothing about low-rank structure. If k\* is not ≪ min(T,d) with real Qwen3-1.7B, the method's premise is
   weak at this scale — check before spending GPU-days on training.
-- **drop ratios at p=0.95** (phase 4): p is the paper's constant, not a gate — but with near-uniform
-  strengths a 0.95 threshold drops almost nothing, making Spectral ≈ Vanilla. Check the logged
-  step-drop / token-drop ratios before committing GPU time to the training runs.
+- **choice of p** (phase 4): the paper does not publish a value for Eq. 8's p — checked the full
+  text and all four appendices; the only "95%" in the paper is Fig. 2's illustrative threshold for
+  an unrelated motivating experiment. `energy_threshold_p: 0.95` in `configs/data-config.yaml` is
+  our engineering starting point. Run `./scripts/run-pipeline.sh masks-sweep` on the real 1.7B
+  strengths and pick the smallest p with a clearly non-zero token-drop before committing GPU time
+  to the training runs — a near-0% drop makes Spectral ≈ Vanilla by construction, not by the
+  method failing.
 
 ## Key Dependencies
 - SSH GPU server access + sync workflow (phase 1)
@@ -75,6 +79,7 @@ Run stages with `./scripts/run-pipeline.sh {data|capture|masks|smoke|train|eval}
 - Selection drops a meaningful fraction of tokens (step-drop and token-drop logged separately)
 
 ## Known Risks
-- p=0.95 (paper value) may drop too few tokens at this scale → log step-drop and token-drop ratios in phase 4
+- p is not published by the paper; an uninformed choice may drop too few tokens at this scale →
+  run the phase-4 sweep and log step-drop/token-drop ratios before choosing p for training
 - AIME/GPQA statistically noisy at 1.7B/2k scale — trend-level claims only
 - ~2-3 GPU-days total budget
