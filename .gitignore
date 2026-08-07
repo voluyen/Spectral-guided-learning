@@ -12,3 +12,6 @@ logs/
 
 # Local agent tooling (ClaudeKit) — not part of the reproduction code
 .claude/
+
+# transient run log at repo root (logs/ dir is already ignored)
+logs-data-prep.txt

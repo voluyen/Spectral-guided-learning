@@ -8,6 +8,7 @@ processing the corpus, since the whole pipeline rests on that identity.
 
 import argparse
 import json
+import statistics
 import time
 from pathlib import Path
 
@@ -22,6 +23,13 @@ from segmentation import record_step_spans
 from spectral_utils import analyze_gradient_matrix
 
 
+def sync_if_cuda(device) -> None:
+    """Block until the CUDA stream drains, so a perf_counter() delta measures real device
+    compute (kernel launches are async — without this the first timing is launch latency)."""
+    if str(device).startswith("cuda"):
+        torch.cuda.synchronize()
+
+
 def load_records(path: str, limit: int | None) -> list[dict]:
     with open(path) as handle:
         records = [json.loads(line) for line in handle]
@@ -34,8 +42,19 @@ def to_gradient_rows(step_spans: list[tuple[int, int]], response_start: int) -> 
 
 
 @torch.no_grad()
-def verify_against_autograd(model, input_ids: torch.Tensor, span: tuple[int, int]) -> float:
-    """Max absolute deviation between analytic and autograd gradients (float32)."""
+def verify_against_autograd(
+    model, input_ids: torch.Tensor, span: tuple[int, int], max_positions: int = 512
+) -> float:
+    """Max absolute deviation between analytic and autograd gradients (float32).
+
+    The autograd reference materializes a full (N x V) fp32 logits matrix and its backward
+    graph; at N ~ 16k response tokens and V ~ 152k that is ~10 GB each, enough to OOM a 40 GB
+    GPU. The identity is per-position, so the span is capped to the first `max_positions`
+    targets — just as conclusive, at bounded memory. The main capture path is unaffected (it
+    chunks the unembedding), so only this check needed the cap.
+    """
+    start, end = span
+    span = (start, min(end, start + max_positions))
     with torch.enable_grad():
         hidden = model.model(input_ids=input_ids).last_hidden_state[0].detach().float()
         hidden.requires_grad_(True)
@@ -71,6 +90,10 @@ def main() -> None:
     output_dir = Path(config["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Cast the unembedding to float32 once for the whole corpus; passed into every
+    # capture below so the (V x d) matrix isn't re-cast per sequence (V=151936 for Qwen3).
+    unembedding = model.get_output_embeddings().weight.float()
+
     if args.verify:
         for record in records[:3]:  # paper-fidelity check on 3 samples before the corpus run
             input_ids = torch.tensor([record["input_ids"]], device=device)
@@ -79,25 +102,51 @@ def main() -> None:
             print(f"analytic vs autograd max|diff| = {deviation:.3e}")
             assert deviation < 1e-2, "analytic gradient does not match autograd"
 
-    rows, started = [], time.time()
+    rows, started, computed, resumed = [], time.time(), 0, 0
+    grad_times, svd_times = [], []  # per-computed-sample; SVD isolated (paper omits its cost, R3)
     for index, record in enumerate(records):
-        input_ids = torch.tensor([record["input_ids"]], device=device)
         response_start, response_end = record["response_token_span"]
         step_spans = record_step_spans(record)
+        npz_path = output_dir / f"{record['id']}.npz"
 
+        # Resume: a sample whose per-sample .npz already exists is reused, skipping the GPU
+        # work, so a run interrupted at sample N restarts from N instead of from scratch.
+        if npz_path.exists():
+            cached = np.load(npz_path)
+            rows.append(
+                {
+                    "id": record["id"],
+                    "k_star": int(cached["k_star"]),
+                    "n_response_tokens": response_end - response_start,
+                    "n_steps": len(step_spans),
+                    "step_strengths": [float(x) for x in cached["step_strengths"]],
+                }
+            )
+            resumed += 1
+            continue
+
+        input_ids = torch.tensor([record["input_ids"]], device=device)
+        sync_if_cuda(device)
+        grad_start = time.perf_counter()
         gradient_matrix = capture_sequence_gradients(
-            model, input_ids, (response_start, response_end), chunk_size=config["chunk_size"]
+            model, input_ids, (response_start, response_end),
+            chunk_size=config["chunk_size"], unembedding=unembedding,
         )
+        sync_if_cuda(device)
+        grad_times.append(time.perf_counter() - grad_start)
+
         result = analyze_gradient_matrix(
             gradient_matrix,
             to_gradient_rows(step_spans, response_start),
             energy_cutoff=config["energy_cutoff"],
         )
+        svd_times.append(result.svd_seconds)  # SVD wall time, cuda-synchronized inside
         del gradient_matrix
 
-        # per-sample spectrum kept for the report; the parquet below is what phase 4 reads
+        # per-sample spectrum written before appending the row, so the .npz is the durable
+        # unit of progress the resume path above keys on; the parquet below is what phase 4 reads
         np.savez_compressed(
-            output_dir / f"{record['id']}.npz",
+            npz_path,
             k_star=result.k_star,
             singular_values=result.singular_values.numpy(),
             step_strengths=np.asarray(result.step_strengths, dtype=np.float32),
@@ -111,14 +160,30 @@ def main() -> None:
                 "step_strengths": result.step_strengths,
             }
         )
-        if (index + 1) % 50 == 0:
+        computed += 1
+        if computed % 50 == 0:
             elapsed = time.time() - started
-            print(f"{index + 1}/{len(records)} samples, {elapsed / (index + 1):.2f}s/sample")
+            print(f"{computed} computed (+{resumed} resumed, {index + 1}/{len(records)} seen), "
+                  f"{elapsed / computed:.2f}s/sample")
 
+    if resumed:
+        print(f"resumed {resumed} samples from existing npz; computed {computed} fresh")
     frame = pd.DataFrame(rows)
     frame.to_parquet(config["strengths_path"])
     print(f"wrote {len(frame)} rows -> {config['strengths_path']} (+ per-sample npz in {output_dir})")
-    print(f"runtime: {time.time() - started:.0f}s total, {(time.time() - started) / len(frame):.2f}s/sample")
+    print(f"runtime: {time.time() - started:.0f}s total, "
+          f"{(time.time() - started) / max(computed, 1):.2f}s/computed-sample")
+    if svd_times:  # timing summary — the paper never reports the SVD cost (R3)
+        total_grad, total_svd = sum(grad_times), sum(svd_times)
+        print(
+            f"gradient: mean={statistics.mean(grad_times) * 1e3:.0f}ms/sample "
+            f"median={statistics.median(grad_times) * 1e3:.0f}ms total={total_grad:.0f}s"
+        )
+        print(
+            f"SVD: mean={statistics.mean(svd_times) * 1e3:.0f}ms/sample "
+            f"median={statistics.median(svd_times) * 1e3:.0f}ms max={max(svd_times) * 1e3:.0f}ms "
+            f"total={total_svd:.0f}s  ({100 * total_svd / max(total_grad + total_svd, 1e-9):.0f}% of gradient+SVD)"
+        )
     print(f"k* : mean={frame.k_star.mean():.1f} median={frame.k_star.median():.0f} max={frame.k_star.max()}")
     ratio = (frame.k_star / frame.n_response_tokens).mean()
     print(f"k*/T mean ratio = {ratio:.4f}  (low-rank premise holds if << 1)")

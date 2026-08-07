@@ -1,11 +1,16 @@
-"""Phase 4: apply the paper's energy threshold p, report drop stats, emit training masks.
+"""Phase 4: apply the energy threshold p, report drop stats, emit training masks.
 
     python src/build_masks.py --config configs/data-config.yaml            # spectral masks
     python src/build_masks.py --config configs/data-config.yaml --vanilla  # + all-ones baseline
+    python src/build_masks.py --config configs/data-config.yaml --sweep 0.7,0.8,0.9,0.95
+                                                                             # sensitivity check only
 
-p is the paper's published value (configs/data-config.yaml: energy_threshold_p), not a
-tuned hyperparameter — there is no sweep. The vanilla baseline is emitted by the same code
-path so the two training runs differ only in the loss mask.
+The paper's Eq. 8 leaves p unspecified — it is not published anywhere in the paper (main text
+or appendix). `energy_threshold_p` in configs/data-config.yaml is therefore an engineering
+choice, not a value taken from the paper. Use `--sweep` to check step-drop/token-drop ratios
+across candidate values (cheap: reuses the already-computed spectral strengths, no retraining)
+before committing to one value for the training runs. The vanilla baseline is emitted by the
+same code path as the spectral masks so the two training runs differ only in the loss mask.
 """
 
 import argparse
@@ -45,6 +50,41 @@ def emit_masked_dataset(records: list[dict], strengths: dict[int, list[float]], 
     return all_stats
 
 
+def sweep_thresholds(
+    records: list[dict], strengths: dict[int, list[float]], thresholds: list[float]
+) -> dict[float, dict]:
+    """Selection-stats summary for each candidate p, without writing any dataset file.
+
+    Reuses the spectral strengths already computed by gradient_capture.py, so this is a
+    seconds-fast sensitivity check: it answers "how much would each p actually drop?" before
+    spending GPU time on a training run built around a single, possibly-bad choice of p.
+    """
+    summaries = {}
+    for threshold in thresholds:
+        stats = [
+            selection_stats(
+                record_step_spans(record), select_steps_by_energy(strengths[record["id"]], threshold)
+            )
+            for record in records
+        ]
+        summaries[threshold] = summarize(stats)
+    return summaries
+
+
+def print_sweep_table(summaries: dict[float, dict]) -> None:
+    header = f"{'p':>6} {'steps dropped':>14} {'median':>8} {'tokens dropped':>15} {'median':>8}"
+    print(header)
+    for threshold, summary in summaries.items():
+        print(
+            f"{threshold:>6} {summary['step_drop_mean']:>13.1%} {summary['step_drop_median']:>7.1%} "
+            f"{summary['token_drop_mean']:>14.1%} {summary['token_drop_median']:>7.1%}"
+        )
+    print(
+        "\nPick the smallest p whose token-drop is clearly > 0% (a near-0% drop makes the "
+        "spectral run statistically indistinguishable from vanilla SFT)."
+    )
+
+
 def summarize(stats: list[dict]) -> dict:
     """Aggregate per-sample stats; step-level and token-level drops reported separately."""
     return {
@@ -69,6 +109,11 @@ def main() -> None:
     parser.add_argument("--config", default="configs/data-config.yaml")
     parser.add_argument("--strengths", default="data/spectral-strengths.parquet")
     parser.add_argument("--vanilla", action="store_true", help="also emit the all-ones baseline")
+    parser.add_argument(
+        "--sweep",
+        help="comma-separated p values to report drop-ratio stats for, e.g. 0.7,0.8,0.9,0.95 "
+        "(no dataset files written; use this to pick p before committing to a training run)",
+    )
     args = parser.parse_args()
 
     config = yaml.safe_load(Path(args.config).read_text())
@@ -80,6 +125,16 @@ def main() -> None:
     records = [record for record in records if record["id"] in strengths]
 
     data_dir = Path(config["output_path"]).parent
+
+    if args.sweep:
+        thresholds = [float(value) for value in args.sweep.split(",")]
+        sweep_summaries = sweep_thresholds(records, strengths, thresholds)
+        print_sweep_table(sweep_summaries)
+        (data_dir / "selection-stats-sweep.json").write_text(
+            json.dumps({str(k): v for k, v in sweep_summaries.items()}, indent=2)
+        )
+        return
+
     threshold = config["energy_threshold_p"]
     summaries = {}
 
@@ -91,7 +146,8 @@ def main() -> None:
     summaries[f"spectral p={threshold}"] = summarize(
         emit_masked_dataset(records, strengths, threshold, spectral_path)
     )
-    print(f"p={threshold} (paper value) -> {spectral_path}")
+    # p is an engineering choice (see module docstring) — the paper does not publish Eq. 8's p.
+    print(f"p={threshold} (not a paper-published value; run --sweep first to justify it) -> {spectral_path}")
 
     header = f"\n{'variant':<18} {'steps dropped':>14} {'median':>8} {'tokens dropped':>15} {'median':>8} {'keeps final':>12}"
     print(header)
