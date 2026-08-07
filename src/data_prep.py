@@ -21,7 +21,7 @@ from transformers import AutoTokenizer
 from segmentation import encode_with_offsets, step_token_spans
 
 PROMPT_TEMPLATE = "{problem}\n\nPlease reason step by step, and put your final answer within \\boxed{{}}.\n\n"
-SHUFFLE_BUFFER = 10_000
+SHUFFLE_BUFFER = 5_000
 
 
 def build_record(tokenizer, problem: str, response: str, max_tokens: int) -> dict | None:
