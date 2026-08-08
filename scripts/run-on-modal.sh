@@ -38,6 +38,11 @@ REPO="$(pwd)"
 export PYTHONPATH="${PYTHONPATH:-}:${REPO}/src"
 export HF_HUB_DISABLE_SYMLINKS_WARNING=1
 export TOKENIZERS_PARALLELISM=false
+# Avoid vLLM's FlashInfer backend: it JIT-compiles CUDA kernels at runtime and needs curand.h,
+# which some CUDA images (incl. this Modal one) omit. Native torch sampler + SDPA attention need
+# no JIT, so vLLM starts on a headers-less image. Slower, but fine for the short probe generations.
+export VLLM_USE_FLASHINFER_SAMPLER=0
+export VLLM_ATTENTION_BACKEND=TORCH_SDPA
 mkdir -p logs data checkpoints results
 
 require_gpu() {
