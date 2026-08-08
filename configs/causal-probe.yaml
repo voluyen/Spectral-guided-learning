@@ -1,0 +1,20 @@
+# Phase 3 causal probe (step-diversity experiment). Forced-answer sufficiency curve:
+# keep top-p% steps by each metric, let the student answer, measure accuracy vs token budget.
+model_name: Qwen/Qwen3-1.7B-Base
+data_path: data/train-2k-segmented.jsonl
+scores_path: data/spectral-strengths-diversity.parquet
+
+max_model_len: 34816
+gpu_memory_utilization: 0.9
+temperature: 0.6
+top_p: 0.95
+n_samples: 4                # forced-answer completions per prompt, accuracy averaged
+max_answer_tokens: 24       # only the boxed answer is generated
+seed: 42
+
+budgets: [0.2, 0.4, 0.6, 0.8]           # fraction of steps kept (1.0 = full control)
+metrics: [strength, novelty, qd, diversity, random]  # qd = strength * novelty (quality-diversity)
+limit: 80                   # candidate samples scanned before headroom filtering
+full_threshold: 0.75        # keep sample only if full-CoT accuracy >= this (solvable)
+empty_threshold: 0.25       # ...and empty-CoT accuracy <= this (has headroom)
+out_path: results/probe/causal-probe.json

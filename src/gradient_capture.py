@@ -236,7 +236,7 @@ def main() -> None:
         print(
             f"IPR novelty (eff #modes): mean={nov.mean():.2f} std={nov.std():.2f} "
             f"p10={nq[0]:.2f} median={nq[1]:.2f} p90={nq[2]:.2f} max={nov.max():.2f}  "
-            f"[non-degeneracy gate: spread across [1, k*] expected]"
+            f"[non-degeneracy gate: spread across [1, rank r] expected; may exceed k*]"
         )
 
 

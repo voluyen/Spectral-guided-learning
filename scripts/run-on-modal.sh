@@ -13,6 +13,7 @@
 # STEP-DIVERSITY EXPERIMENT (separate from the reproduction; own config + output files):
 #   bash scripts/run-on-modal.sh capture-diversity 200 # GPU: recompute gradients+SVD, emit Div/IPR
 #   bash scripts/run-on-modal.sh diversity-gate         # CPU: Div/IPR non-degeneracy verdict
+#   bash scripts/run-on-modal.sh causal-probe           # GPU: forced-answer sufficiency curve
 #   bash scripts/run-on-modal.sh masks          # phase 4  (CPU) -> train-{vanilla,spectral}.jsonl
 #   bash scripts/run-on-modal.sh train          # phase 5  (GPU, ~10-20 h per run, x2)
 #   bash scripts/run-on-modal.sh eval           # phase 6  (GPU, ~4-6 h per model)
@@ -106,6 +107,13 @@ case "${1:-}" in
     # [step-diversity experiment] Read-only, CPU: reads the diversity parquet and prints the Div/IPR
     # non-degeneracy verdict. Run it after `capture-diversity`.
     python src/diversity_gate.py --config configs/capture-diversity.yaml 2>&1 | tee logs/diversity-gate.log
+    ;;
+
+  causal-probe)
+    # [step-diversity experiment] GPU. Forced-answer sufficiency curve: keep top-p% steps per metric,
+    # let the student answer, measure accuracy vs token budget (strength vs random; qd vs strength).
+    require_gpu
+    python src/causal_probe.py --config configs/causal-probe.yaml 2>&1 | tee logs/causal-probe.log
     ;;
 
   masks-sweep)
