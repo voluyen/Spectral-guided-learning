@@ -19,6 +19,7 @@ budgets: [0.2, 0.4, 0.6, 0.8]           # fraction of TOKENS kept (equalized acr
 metrics: [strength, novelty, qd, diversity, entropy, ppl, logprob, random]
 limit: 300                  # candidate samples scanned before headroom filtering (was 80 -> 34 kept)
 strip_answer: true          # remove teacher's \boxed{...} so the student must derive, not copy
+exclude_last_steps: 1       # bar the conclusion step from selection (kills the last-step answer leak)
 full_threshold: 0.75        # keep sample only if full-CoT accuracy >= this (solvable)
 empty_threshold: 0.25       # ...and empty-CoT accuracy <= this (has headroom)
 out_path: results/probe/causal-probe.json

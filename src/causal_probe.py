@@ -206,8 +206,20 @@ def run(config: dict) -> dict:
     )
 
     strip_answer = config.get("strip_answer", True)
-    # Headroom filter: full-CoT must solve, empty-CoT must fail, else removing steps proves nothing.
-    all_keep = [[True] * len(s["step_texts"]) for s in samples]
+    exclude_last = config.get("exclude_last_steps", 0)  # bar the conclusion step(s) from selection
+
+    def candidate_scores(sample: dict, metric: str) -> list[float]:
+        """Metric scores with the last `exclude_last` steps made unselectable (-inf)."""
+        scores = list(metric_scores(sample, metric, rng))
+        for i in range(max(0, len(scores) - exclude_last), len(scores)):
+            scores[i] = float("-inf")
+        return scores
+
+    # Headroom filter: full-CoT (minus excluded conclusion) must solve, empty must fail.
+    def full_mask(n: int) -> list[bool]:
+        return [i < n - exclude_last for i in range(n)]
+
+    all_keep = [full_mask(len(s["step_texts"])) for s in samples]
     none_keep = [[False] * len(s["step_texts"]) for s in samples]
     full_prompts = [build_prompt(s, k, strip_answer) for s, k in zip(samples, all_keep)]
     empty_prompts = [build_prompt(s, k, strip_answer) for s, k in zip(samples, none_keep)]
@@ -235,7 +247,7 @@ def run(config: dict) -> dict:
     for metric in metrics:
         for budget in config["budgets"]:
             for sample in kept:
-                keep = keep_by_token_budget(metric_scores(sample, metric, rng), sample["n_tokens"], budget)
+                keep = keep_by_token_budget(candidate_scores(sample, metric), sample["n_tokens"], budget)
                 mean_pos, last_kept = kept_position_stats(keep)
                 jobs.append((metric, budget, sample, kept_token_fraction(sample, keep), mean_pos, last_kept))
                 prompts.append(build_prompt(sample, keep, strip_answer))
@@ -268,7 +280,7 @@ def run(config: dict) -> dict:
             }
 
     header = f"{'metric':<10} " + "  ".join(f"p={b:<5}" for b in config["budgets"])
-    print(f"\nheadroom={len(kept)} samples  strip_answer={strip_answer}")
+    print(f"\nheadroom={len(kept)} samples  strip_answer={strip_answer}  exclude_last_steps={exclude_last}")
     print(f"full CoT acc={summary['full_acc']:.3f}  empty CoT acc={summary['empty_acc']:.3f}")
 
     def table(title: str, key: str) -> None:
