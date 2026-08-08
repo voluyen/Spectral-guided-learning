@@ -8,7 +8,11 @@
 #   bash scripts/run-on-modal.sh data           # phase 2  (CPU, ~15 min)  -> data/train-2k-segmented.jsonl
 #   bash scripts/run-on-modal.sh capture-test 20 # phase 3 test (GPU): SVD timing on N samples
 #   bash scripts/run-on-modal.sh capture        # phase 3  (GPU, ~2-4 h)   -> data/spectral-strengths.parquet
+#   bash scripts/run-on-modal.sh diversity-gate # [step-diversity experiment] Div/IPR verdict (CPU, read-only)
 #   bash scripts/run-on-modal.sh masks-sweep    # phase 4 gate: pick p (CPU, seconds)
+#
+# Stages above are the paper reproduction pipeline; `diversity-gate` belongs to the separate
+# step-diversity validation experiment and only reads what `capture` produced.
 #   bash scripts/run-on-modal.sh masks          # phase 4  (CPU) -> train-{vanilla,spectral}.jsonl
 #   bash scripts/run-on-modal.sh train          # phase 5  (GPU, ~10-20 h per run, x2)
 #   bash scripts/run-on-modal.sh eval           # phase 6  (GPU, ~4-6 h per model)
@@ -87,6 +91,13 @@ case "${1:-}" in
     echo "if k* << min(T, d). If k*/T is NOT clearly small on the real 1.7B model, reconsider"
     echo "before spending GPU-days on training. See plan gate: phase 3."
     echo "==========================================="
+    ;;
+
+  diversity-gate)
+    # NEW EXPERIMENT (step-diversity validation), NOT paper reproduction. Read-only, CPU: reads the
+    # parquet `capture` already wrote and prints the Div/IPR non-degeneracy verdict. Recomputes
+    # nothing. Run it after `capture` (or `capture-test`).
+    python src/diversity_gate.py --config configs/capture-config.yaml 2>&1 | tee logs/diversity-gate.log
     ;;
 
   masks-sweep)
