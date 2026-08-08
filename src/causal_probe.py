@@ -90,14 +90,24 @@ def metric_scores(sample: dict, metric: str, rng: random.Random) -> list[float]:
     return sample[metric]  # strength | diversity | novelty
 
 
-def keep_top_fraction(scores: list[float], budget: float) -> list[bool]:
-    """Keep the highest-scoring ceil(budget*n) steps; return an order-preserving boolean mask."""
-    n = len(scores)
-    k = max(1, round(budget * n))
-    top = sorted(range(n), key=lambda i: scores[i], reverse=True)[:k]
-    keep = [False] * n
-    for i in top:
+def keep_by_token_budget(scores: list[float], n_tokens: list[int], budget: float) -> list[bool]:
+    """Keep highest-scoring steps until ~budget of the CoT's TOKENS are kept (not step count).
+
+    Budgeting by tokens equalizes how much text every metric's selection feeds the student, so the
+    accuracy differences reflect *which* steps were chosen, not how long they were. Ranking by step
+    count instead lets a metric win just by preferring longer steps.
+    """
+    total = sum(n_tokens)
+    order = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+    keep = [False] * len(scores)
+    kept = 0
+    for i in order:
+        if kept >= budget * total:
+            break
         keep[i] = True
+        kept += n_tokens[i]
+    if not any(keep):  # always keep at least the top-ranked step
+        keep[order[0]] = True
     return keep
 
 
@@ -187,7 +197,7 @@ def run(config: dict) -> dict:
     for metric in metrics:
         for budget in config["budgets"]:
             for sample in kept:
-                keep = keep_top_fraction(metric_scores(sample, metric, rng), budget)
+                keep = keep_by_token_budget(metric_scores(sample, metric, rng), sample["n_tokens"], budget)
                 jobs.append((metric, budget, sample, kept_token_fraction(sample, keep)))
                 prompts.append(build_prompt(sample, keep))
     generations = forced_answer(llm, prompts, config)
@@ -205,18 +215,26 @@ def run(config: dict) -> dict:
         "empty_acc": sum(s["_empty_acc"] for s in kept) / len(kept),
         "curve": {},
     }
-    print(f"\nfull CoT acc={summary['full_acc']:.3f}  empty CoT acc={summary['empty_acc']:.3f}\n")
-    print(f"{'metric':<10} " + "  ".join(f"p={b:<4}" for b in config["budgets"]))
     for metric in metrics:
-        cells = []
-        row = []
         for budget in config["budgets"]:
-            acc = sum(curve[(metric, budget)]["acc"]) / len(kept)
-            tok = sum(curve[(metric, budget)]["tok"]) / len(kept)
-            summary["curve"][f"{metric}@{budget}"] = {"acc": acc, "tok_frac": tok}
-            cells.append(f"{acc:.3f}")
-            row.append(acc)
-        print(f"{metric:<10} " + "  ".join(f"{c:<6}" for c in cells))
+            cell = curve[(metric, budget)]
+            summary["curve"][f"{metric}@{budget}"] = {
+                "acc": sum(cell["acc"]) / len(kept),
+                "tok_frac": sum(cell["tok"]) / len(kept),
+            }
+
+    print(f"\nfull CoT acc={summary['full_acc']:.3f}  empty CoT acc={summary['empty_acc']:.3f}")
+    header = f"{'metric':<10} " + "  ".join(f"p={b:<5}" for b in config["budgets"])
+    print("\nACCURACY (token-budgeted; higher at low p = ranks needed steps first)")
+    print(header)
+    for metric in metrics:
+        cells = [f"{summary['curve'][f'{metric}@{b}']['acc']:.3f}" for b in config["budgets"]]
+        print(f"{metric:<10} " + "  ".join(f"{c:<7}" for c in cells))
+    print("\nTOKENS KEPT (fraction; should be ~equal across metrics per column = confound removed)")
+    print(header)
+    for metric in metrics:
+        cells = [f"{summary['curve'][f'{metric}@{b}']['tok_frac']:.3f}" for b in config["budgets"]]
+        print(f"{metric:<10} " + "  ".join(f"{c:<7}" for c in cells))
     return summary
 
 

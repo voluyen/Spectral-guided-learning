@@ -13,7 +13,7 @@ n_samples: 4                # forced-answer completions per prompt, accuracy ave
 max_answer_tokens: 24       # only the boxed answer is generated
 seed: 42
 
-budgets: [0.2, 0.4, 0.6, 0.8]           # fraction of steps kept (1.0 = full control)
+budgets: [0.2, 0.4, 0.6, 0.8]           # fraction of TOKENS kept (equalized across metrics)
 # qd = strength*novelty (quality-diversity). entropy/ppl/logprob need the baseline-scores stage;
 # all metrics keep the highest-scoring steps (high entropy/ppl = informative; high logprob = LALP).
 metrics: [strength, novelty, qd, diversity, entropy, ppl, logprob, random]
