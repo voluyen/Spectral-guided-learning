@@ -5,8 +5,8 @@ data_path: data/train-2k-segmented.jsonl
 scores_path: data/spectral-strengths-diversity.parquet
 baseline_scores_path: data/baseline-step-scores.parquet   # optional; from `baseline-scores` stage
 
-max_model_len: 34816
-gpu_memory_utilization: 0.9
+max_model_len: 32768        # Qwen3-1.7B max_position_embeddings (data cutoff is 16k, so ample)
+gpu_memory_utilization: 0.85  # leave headroom on the 44GB L40S
 temperature: 0.6
 top_p: 0.95
 n_samples: 4                # forced-answer completions per prompt, accuracy averaged
