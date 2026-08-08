@@ -24,6 +24,7 @@ parquet; when present they join in as extra metrics, else they are skipped with 
 import argparse
 import json
 import random
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -33,6 +34,28 @@ from transformers import AutoTokenizer
 from answer_scoring import extract_boxed, score_generation
 
 ANSWER_PRIME = "\n\nThe final answer is \\boxed{"
+_BOXED_OPEN = re.compile(r"\\boxed\s*{")
+
+
+def strip_boxed(text: str) -> str:
+    """Remove every \\boxed{...} span (brace-matched) so the teacher's own answer can't be copied.
+
+    Without this, keeping the conclusion step leaks the gold answer into the prompt and the student
+    just echoes it -- the probe would then reward "kept the answer step", not "kept the reasoning".
+    """
+    out, i = [], 0
+    while True:
+        match = _BOXED_OPEN.search(text, i)
+        if not match:
+            out.append(text[i:])
+            return "".join(out)
+        out.append(text[i : match.start()])
+        depth, j = 1, match.end()
+        while j < len(text) and depth:
+            depth += {"{": 1, "}": -1}.get(text[j], 0)
+            j += 1
+        out.append("the result")
+        i = j
 
 
 def load_samples(data_path: str, scores_path: str, tokenizer, baseline_path: str | None = None) -> list[dict]:
@@ -111,9 +134,23 @@ def keep_by_token_budget(scores: list[float], n_tokens: list[int], budget: float
     return keep
 
 
-def build_prompt(sample: dict, keep: list[bool]) -> str:
+def build_prompt(sample: dict, keep: list[bool], strip_answer: bool = False) -> str:
     cot = "".join(text for text, keep_it in zip(sample["step_texts"], keep) if keep_it)
+    if strip_answer:
+        cot = strip_boxed(cot)
     return sample["prompt"] + cot + ANSWER_PRIME
+
+
+def kept_position_stats(keep: list[bool]) -> tuple[float, float]:
+    """(mean normalized position of kept steps in [0,1], 1.0 if the last step is kept else 0.0).
+
+    Reveals whether a metric preferentially keeps late/conclusion steps -- a selection near the end
+    can leak the answer even after \\boxed stripping, so this diagnoses the position confound.
+    """
+    n = len(keep)
+    kept = [i for i, k in enumerate(keep) if k]
+    mean_pos = (sum(i / (n - 1) for i in kept) / len(kept)) if n > 1 and kept else 0.0
+    return mean_pos, 1.0 if keep and keep[-1] else 0.0
 
 
 def kept_token_fraction(sample: dict, keep: list[bool]) -> float:
@@ -168,11 +205,12 @@ def run(config: dict) -> dict:
         dtype="bfloat16",
     )
 
+    strip_answer = config.get("strip_answer", True)
     # Headroom filter: full-CoT must solve, empty-CoT must fail, else removing steps proves nothing.
     all_keep = [[True] * len(s["step_texts"]) for s in samples]
     none_keep = [[False] * len(s["step_texts"]) for s in samples]
-    full_prompts = [build_prompt(s, k) for s, k in zip(samples, all_keep)]
-    empty_prompts = [build_prompt(s, k) for s, k in zip(samples, none_keep)]
+    full_prompts = [build_prompt(s, k, strip_answer) for s, k in zip(samples, all_keep)]
+    empty_prompts = [build_prompt(s, k, strip_answer) for s, k in zip(samples, none_keep)]
     full_gen = forced_answer(llm, full_prompts, config)
     empty_gen = forced_answer(llm, empty_prompts, config)
 
@@ -198,19 +236,23 @@ def run(config: dict) -> dict:
         for budget in config["budgets"]:
             for sample in kept:
                 keep = keep_by_token_budget(metric_scores(sample, metric, rng), sample["n_tokens"], budget)
-                jobs.append((metric, budget, sample, kept_token_fraction(sample, keep)))
-                prompts.append(build_prompt(sample, keep))
+                mean_pos, last_kept = kept_position_stats(keep)
+                jobs.append((metric, budget, sample, kept_token_fraction(sample, keep), mean_pos, last_kept))
+                prompts.append(build_prompt(sample, keep, strip_answer))
     generations = forced_answer(llm, prompts, config)
 
-    # Aggregate the sufficiency curve: mean accuracy + mean kept-token fraction per (metric, budget).
+    # Aggregate per (metric, budget): accuracy, kept-token fraction, and position diagnostics.
     curve: dict = {}
-    for (metric, budget, sample, tok_frac), gen in zip(jobs, generations):
-        cell = curve.setdefault((metric, budget), {"acc": [], "tok": []})
+    for (metric, budget, sample, tok_frac, mean_pos, last_kept), gen in zip(jobs, generations):
+        cell = curve.setdefault((metric, budget), {"acc": [], "tok": [], "pos": [], "last": []})
         cell["acc"].append(accuracy(gen, sample["gold"]))
         cell["tok"].append(tok_frac)
+        cell["pos"].append(mean_pos)
+        cell["last"].append(last_kept)
 
     summary = {
         "headroom": len(kept),
+        "strip_answer": strip_answer,
         "full_acc": sum(s["_full_acc"] for s in kept) / len(kept),
         "empty_acc": sum(s["_empty_acc"] for s in kept) / len(kept),
         "curve": {},
@@ -221,20 +263,25 @@ def run(config: dict) -> dict:
             summary["curve"][f"{metric}@{budget}"] = {
                 "acc": sum(cell["acc"]) / len(kept),
                 "tok_frac": sum(cell["tok"]) / len(kept),
+                "mean_pos": sum(cell["pos"]) / len(kept),
+                "last_kept_frac": sum(cell["last"]) / len(kept),
             }
 
-    print(f"\nfull CoT acc={summary['full_acc']:.3f}  empty CoT acc={summary['empty_acc']:.3f}")
     header = f"{'metric':<10} " + "  ".join(f"p={b:<5}" for b in config["budgets"])
-    print("\nACCURACY (token-budgeted; higher at low p = ranks needed steps first)")
-    print(header)
-    for metric in metrics:
-        cells = [f"{summary['curve'][f'{metric}@{b}']['acc']:.3f}" for b in config["budgets"]]
-        print(f"{metric:<10} " + "  ".join(f"{c:<7}" for c in cells))
-    print("\nTOKENS KEPT (fraction; should be ~equal across metrics per column = confound removed)")
-    print(header)
-    for metric in metrics:
-        cells = [f"{summary['curve'][f'{metric}@{b}']['tok_frac']:.3f}" for b in config["budgets"]]
-        print(f"{metric:<10} " + "  ".join(f"{c:<7}" for c in cells))
+    print(f"\nheadroom={len(kept)} samples  strip_answer={strip_answer}")
+    print(f"full CoT acc={summary['full_acc']:.3f}  empty CoT acc={summary['empty_acc']:.3f}")
+
+    def table(title: str, key: str) -> None:
+        print(f"\n{title}")
+        print(header)
+        for metric in metrics:
+            cells = [f"{summary['curve'][f'{metric}@{b}'][key]:.3f}" for b in config["budgets"]]
+            print(f"{metric:<10} " + "  ".join(f"{c:<7}" for c in cells))
+
+    table("ACCURACY (token-budgeted; higher at low p = ranks needed steps first)", "acc")
+    table("TOKENS KEPT (should be ~equal across metrics per column = token confound removed)", "tok_frac")
+    table("MEAN KEPT POSITION (0=start,1=end; high = keeps late/conclusion steps)", "mean_pos")
+    table("LAST-STEP KEPT frac (1.0 = always keeps the final step = answer-leak risk)", "last_kept_frac")
     return summary
 
 
