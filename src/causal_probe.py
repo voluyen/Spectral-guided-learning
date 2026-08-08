@@ -106,11 +106,16 @@ def load_samples(data_path: str, scores_path: str, tokenizer, baseline_path: str
 
 
 def metric_scores(sample: dict, metric: str, rng: random.Random) -> list[float]:
+    n = len(sample["strength"])
     if metric == "qd":  # quality-diversity: spectral strength weighted by IPR novelty
-        return [s * n for s, n in zip(sample["strength"], sample["novelty"])]
+        return [s * v for s, v in zip(sample["strength"], sample["novelty"])]
     if metric == "random":
-        return [rng.random() for _ in sample["strength"]]
-    return sample[metric]  # strength | diversity | novelty
+        return [rng.random() for _ in range(n)]
+    if metric == "recency":  # position control: keep the LATEST steps (later index = higher)
+        return [float(i) for i in range(n)]
+    if metric == "early":  # position control: keep the EARLIEST steps
+        return [float(n - i) for i in range(n)]
+    return sample[metric]  # strength | diversity | novelty | entropy | ppl | logprob
 
 
 def keep_by_token_budget(scores: list[float], n_tokens: list[int], budget: float) -> list[bool]:
@@ -188,7 +193,7 @@ def run(config: dict) -> dict:
     print(f"loaded {len(samples)} candidate samples")
 
     # Baseline metrics are usable only if every sample carries them (all-or-none per run).
-    spectral = {"strength", "diversity", "novelty", "qd", "random"}
+    spectral = {"strength", "diversity", "novelty", "qd", "random", "recency", "early"}
     metrics = [
         m for m in config["metrics"] if m in spectral or (samples and all(m in s for s in samples))
     ]
