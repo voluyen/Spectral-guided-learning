@@ -67,11 +67,14 @@ def main() -> None:
         response_start, response_end = record["response_token_span"]
         step_rows = [(a - response_start, b - response_start) for a, b in record_step_spans(record)]
         input_ids = torch.tensor([record["input_ids"]], device=device)
-        hidden = model.model(input_ids=input_ids).last_hidden_state[0]
-        hidden_rows, targets = shift_for_causal_lm(hidden, input_ids[0], (response_start, response_end))
-        entropy, nll, target_logprob = token_distribution_stats(
-            hidden_rows, targets, unembedding, chunk_size=config["chunk_size"]
-        )
+        # no_grad is essential: a plain forward over a ~16k-token sequence would retain the whole
+        # autograd graph (tens of GB) and OOM. We only need the logits, never a backward.
+        with torch.no_grad():
+            hidden = model.model(input_ids=input_ids).last_hidden_state[0]
+            hidden_rows, targets = shift_for_causal_lm(hidden, input_ids[0], (response_start, response_end))
+            entropy, nll, target_logprob = token_distribution_stats(
+                hidden_rows, targets, unembedding, chunk_size=config["chunk_size"]
+            )
         rows.append(
             {
                 "id": record["id"],
@@ -80,6 +83,7 @@ def main() -> None:
                 "step_logprob": aggregate_steps(target_logprob.cpu(), step_rows, perplexity=False),
             }
         )
+        del hidden, hidden_rows, entropy, nll, target_logprob, input_ids
         if (index + 1) % 50 == 0:
             print(f"{index + 1}/{len(records)} ({(time.time() - started) / (index + 1):.2f}s/sample)")
 

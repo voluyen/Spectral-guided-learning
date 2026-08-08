@@ -43,6 +43,7 @@ export TOKENIZERS_PARALLELISM=false
 # no JIT, so vLLM starts on a headers-less image. Slower, but fine for the short probe generations.
 export VLLM_USE_FLASHINFER_SAMPLER=0
 export VLLM_ATTENTION_BACKEND=TORCH_SDPA
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True  # reduce fragmentation OOMs
 mkdir -p logs data checkpoints results
 
 require_gpu() {
@@ -63,6 +64,21 @@ require_hf_token() {
 }
 
 case "${1:-}" in
+  free-gpu)
+    # Reclaim a GPU held by a leftover process (a crashed vLLM leaves an EngineCore subprocess that
+    # keeps ~all the VRAM, so the next run OOMs on its first forward). Run this between GPU stages,
+    # or just restart the container for a guaranteed-clean GPU.
+    nvidia-smi || true
+    pkill -9 -f 'vllm' 2>/dev/null || true
+    pkill -9 -f 'EngineCore' 2>/dev/null || true
+    for pid in $(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null); do
+      [ "$pid" != "$$" ] && kill -9 "$pid" 2>/dev/null || true
+    done
+    sleep 2
+    echo ">> after cleanup:"
+    nvidia-smi || true
+    ;;
+
   setup)
     echo ">> installing the stack (torch/transformers/datasets/...); vllm is only needed for eval"
     python -m pip install --upgrade pip
