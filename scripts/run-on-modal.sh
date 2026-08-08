@@ -13,6 +13,7 @@
 # STEP-DIVERSITY EXPERIMENT (separate from the reproduction; own config + output files):
 #   bash scripts/run-on-modal.sh capture-diversity 200 # GPU: recompute gradients+SVD, emit Div/IPR
 #   bash scripts/run-on-modal.sh diversity-gate         # CPU: Div/IPR non-degeneracy verdict
+#   bash scripts/run-on-modal.sh baseline-scores        # GPU: per-step entropy/PPL/logprob baselines
 #   bash scripts/run-on-modal.sh causal-probe           # GPU: forced-answer sufficiency curve
 #   bash scripts/run-on-modal.sh masks          # phase 4  (CPU) -> train-{vanilla,spectral}.jsonl
 #   bash scripts/run-on-modal.sh train          # phase 5  (GPU, ~10-20 h per run, x2)
@@ -109,9 +110,17 @@ case "${1:-}" in
     python src/diversity_gate.py --config configs/capture-diversity.yaml 2>&1 | tee logs/diversity-gate.log
     ;;
 
+  baseline-scores)
+    # [step-diversity experiment] GPU. One student forward per sample -> per-step entropy/PPL/logprob
+    # baselines for the probe. Optional 2nd arg = sample limit. Run before causal-probe.
+    require_gpu
+    python src/baseline_scores.py --config configs/capture-diversity.yaml --limit "${2:-500}" 2>&1 | tee logs/baseline-scores.log
+    ;;
+
   causal-probe)
     # [step-diversity experiment] GPU. Forced-answer sufficiency curve: keep top-p% steps per metric,
-    # let the student answer, measure accuracy vs token budget (strength vs random; qd vs strength).
+    # let the student answer, measure accuracy vs token budget. Compares spectral (strength/novelty/qd)
+    # against baselines (entropy/ppl/logprob) and random. Run baseline-scores first for the baselines.
     require_gpu
     python src/causal_probe.py --config configs/causal-probe.yaml 2>&1 | tee logs/causal-probe.log
     ;;

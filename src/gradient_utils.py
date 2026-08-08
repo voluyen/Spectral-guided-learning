@@ -93,3 +93,34 @@ def capture_sequence_gradients(
     hidden = model.model(input_ids=input_ids).last_hidden_state[0]  # (T, d), post-norm
     rows, targets = shift_for_causal_lm(hidden, input_ids[0], target_span)
     return analytic_hidden_gradients(rows, targets, unembedding, chunk_size=chunk_size)
+
+
+@torch.no_grad()
+def token_distribution_stats(
+    hidden_rows: torch.Tensor,
+    target_ids: torch.Tensor,
+    unembedding: torch.Tensor,
+    chunk_size: int = 1024,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Per-token predictive entropy, target NLL, and target log-prob for the forward-pass baselines.
+
+    Chunked over positions exactly like analytic_hidden_gradients, so the full (N x V) logits are
+    never materialized (V ~ 152k for Qwen3). Returns three (N,) float32 tensors:
+    (entropy, nll, target_logprob).
+    """
+    n_targets = hidden_rows.shape[0]
+    unembed32 = unembedding.float()
+    entropy = torch.empty(n_targets, dtype=torch.float32, device=hidden_rows.device)
+    nll = torch.empty(n_targets, dtype=torch.float32, device=hidden_rows.device)
+    target_logprob = torch.empty(n_targets, dtype=torch.float32, device=hidden_rows.device)
+
+    for start in range(0, n_targets, chunk_size):
+        end = min(start + chunk_size, n_targets)
+        log_p = torch.log_softmax(hidden_rows[start:end].float() @ unembed32.T, dim=-1)  # (chunk, V)
+        entropy[start:end] = -(log_p.exp() * log_p).sum(dim=-1)
+        picked = log_p[torch.arange(end - start, device=log_p.device), target_ids[start:end]]
+        target_logprob[start:end] = picked
+        nll[start:end] = -picked
+        del log_p
+
+    return entropy, nll, target_logprob

@@ -172,6 +172,25 @@ def test_analyze_gradient_matrix_emits_step_novelty():
     assert all(n >= 1.0 - 1e-4 for n in result.step_novelty)
 
 
+def test_token_distribution_stats_matches_direct_logits():
+    # Chunked entropy/nll/logprob must equal a direct full-logits computation.
+    from gradient_utils import token_distribution_stats
+
+    torch.manual_seed(11)
+    hidden = torch.randn(7, 8)
+    unembedding = torch.randn(20, 8)
+    targets = torch.randint(0, 20, (7,))
+    entropy, nll, logprob = token_distribution_stats(hidden, targets, unembedding, chunk_size=3)
+
+    log_p = torch.log_softmax(hidden @ unembedding.T, dim=-1)
+    ref_entropy = -(log_p.exp() * log_p).sum(dim=-1)
+    ref_logprob = log_p[torch.arange(7), targets]
+    assert torch.allclose(entropy, ref_entropy, atol=1e-5)
+    assert torch.allclose(logprob, ref_logprob, atol=1e-5)
+    assert torch.allclose(nll, -ref_logprob, atol=1e-5)
+    assert (entropy >= 0).all()
+
+
 def test_baseline_scorers_are_well_formed():
     torch.manual_seed(8)
     logits = torch.randn(6, 100)

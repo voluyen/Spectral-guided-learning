@@ -14,9 +14,10 @@ Controls: full CoT (upper bound), empty CoT (lower bound / headroom check), rand
 "fewer tokens" from "the right tokens"). Only samples that are solvable with the full CoT AND
 unsolved with no CoT are kept, so removing steps can actually change the outcome.
 
-Baselines (entropy / PPL / local-logprob) need a separate student forward pass for logits and are
-added in a follow-up; this slice runs on vLLM + the spectral parquet alone.
+Baselines (entropy / PPL / local-logprob) come from src/baseline_scores.py written to its own
+parquet; when present they join in as extra metrics, else they are skipped with a warning.
 
+    python src/baseline_scores.py --config configs/capture-diversity.yaml   # optional, first
     python src/causal_probe.py --config configs/causal-probe.yaml
 """
 
@@ -34,9 +35,16 @@ from answer_scoring import extract_boxed, score_generation
 ANSWER_PRIME = "\n\nThe final answer is \\boxed{"
 
 
-def load_samples(data_path: str, scores_path: str, tokenizer) -> list[dict]:
-    """Join segmented records with their per-step spectral scores; keep only usable samples."""
+def load_samples(data_path: str, scores_path: str, tokenizer, baseline_path: str | None = None) -> list[dict]:
+    """Join segmented records with their per-step spectral (and optional baseline) scores.
+
+    Only samples usable for the probe are kept: scores aligned to steps, >=2 steps, gold present.
+    Baseline scores (entropy/perplexity/logprob) are attached when the parquet exists.
+    """
     scores = pd.read_parquet(scores_path).set_index("id")
+    baselines = None
+    if baseline_path and Path(baseline_path).exists():
+        baselines = pd.read_parquet(baseline_path).set_index("id")
     samples = []
     with open(data_path, encoding="utf-8") as handle:
         for line in handle:
@@ -54,18 +62,23 @@ def load_samples(data_path: str, scores_path: str, tokenizer) -> list[dict]:
                 continue
             ids = record["input_ids"]
             step_texts = [tokenizer.decode(ids[s["token_start"] : s["token_end"]]) for s in steps]
-            samples.append(
-                {
-                    "id": rid,
-                    "prompt": record["prompt"],
-                    "gold": gold,
-                    "step_texts": step_texts,
-                    "strength": strength,
-                    "diversity": list(row.step_diversity),
-                    "novelty": list(row.step_novelty),
-                    "n_tokens": [s["token_end"] - s["token_start"] for s in steps],
-                }
-            )
+            sample = {
+                "id": rid,
+                "prompt": record["prompt"],
+                "gold": gold,
+                "step_texts": step_texts,
+                "strength": strength,
+                "diversity": list(row.step_diversity),
+                "novelty": list(row.step_novelty),
+                "n_tokens": [s["token_end"] - s["token_start"] for s in steps],
+            }
+            if baselines is not None and rid in baselines.index:
+                brow = baselines.loc[rid]
+                if len(brow.step_entropy) == len(steps):
+                    sample["entropy"] = list(brow.step_entropy)
+                    sample["ppl"] = list(brow.step_perplexity)
+                    sample["logprob"] = list(brow.step_logprob)
+            samples.append(sample)
     return samples
 
 
@@ -122,8 +135,19 @@ def accuracy(completions: list[str], gold: str) -> float:
 
 def run(config: dict) -> dict:
     tokenizer = AutoTokenizer.from_pretrained(config["model_name"])
-    samples = load_samples(config["data_path"], config["scores_path"], tokenizer)[: config["limit"]]
+    samples = load_samples(
+        config["data_path"], config["scores_path"], tokenizer, config.get("baseline_scores_path")
+    )[: config["limit"]]
     print(f"loaded {len(samples)} candidate samples")
+
+    # Baseline metrics are usable only if every sample carries them (all-or-none per run).
+    spectral = {"strength", "diversity", "novelty", "qd", "random"}
+    metrics = [
+        m for m in config["metrics"] if m in spectral or (samples and all(m in s for s in samples))
+    ]
+    dropped = [m for m in config["metrics"] if m not in metrics]
+    if dropped:
+        print(f"skipping metrics with no baseline scores: {dropped} (run baseline-scores first)")
 
     from vllm import LLM
 
@@ -160,7 +184,7 @@ def run(config: dict) -> dict:
     # Build every (metric, budget) intervened prompt for the kept set, generate in one batch.
     rng = random.Random(config["seed"])
     jobs, prompts = [], []
-    for metric in config["metrics"]:
+    for metric in metrics:
         for budget in config["budgets"]:
             for sample in kept:
                 keep = keep_top_fraction(metric_scores(sample, metric, rng), budget)
@@ -183,7 +207,7 @@ def run(config: dict) -> dict:
     }
     print(f"\nfull CoT acc={summary['full_acc']:.3f}  empty CoT acc={summary['empty_acc']:.3f}\n")
     print(f"{'metric':<10} " + "  ".join(f"p={b:<4}" for b in config["budgets"]))
-    for metric in config["metrics"]:
+    for metric in metrics:
         cells = []
         row = []
         for budget in config["budgets"]:
