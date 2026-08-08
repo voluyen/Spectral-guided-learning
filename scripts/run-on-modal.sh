@@ -8,11 +8,11 @@
 #   bash scripts/run-on-modal.sh data           # phase 2  (CPU, ~15 min)  -> data/train-2k-segmented.jsonl
 #   bash scripts/run-on-modal.sh capture-test 20 # phase 3 test (GPU): SVD timing on N samples
 #   bash scripts/run-on-modal.sh capture        # phase 3  (GPU, ~2-4 h)   -> data/spectral-strengths.parquet
-#   bash scripts/run-on-modal.sh diversity-gate # [step-diversity experiment] Div/IPR verdict (CPU, read-only)
 #   bash scripts/run-on-modal.sh masks-sweep    # phase 4 gate: pick p (CPU, seconds)
 #
-# Stages above are the paper reproduction pipeline; `diversity-gate` belongs to the separate
-# step-diversity validation experiment and only reads what `capture` produced.
+# STEP-DIVERSITY EXPERIMENT (separate from the reproduction; own config + output files):
+#   bash scripts/run-on-modal.sh capture-diversity 200 # GPU: recompute gradients+SVD, emit Div/IPR
+#   bash scripts/run-on-modal.sh diversity-gate         # CPU: Div/IPR non-degeneracy verdict
 #   bash scripts/run-on-modal.sh masks          # phase 4  (CPU) -> train-{vanilla,spectral}.jsonl
 #   bash scripts/run-on-modal.sh train          # phase 5  (GPU, ~10-20 h per run, x2)
 #   bash scripts/run-on-modal.sh eval           # phase 6  (GPU, ~4-6 h per model)
@@ -93,11 +93,19 @@ case "${1:-}" in
     echo "==========================================="
     ;;
 
+  capture-diversity)
+    # [step-diversity experiment] GPU. Recomputes gradients+SVD into a SEPARATE output_dir/parquet
+    # (configs/capture-diversity.yaml) so it emits Div/IPR without touching the reproduction's
+    # data/spectral cache. A fresh dir means no npz to resume from, so it always computes fresh.
+    # Optional 2nd arg = number of samples (default 200):  bash run-on-modal.sh capture-diversity 200
+    require_gpu
+    python src/gradient_capture.py --config configs/capture-diversity.yaml --limit "${2:-200}" 2>&1 | tee logs/capture-diversity.log
+    ;;
+
   diversity-gate)
-    # NEW EXPERIMENT (step-diversity validation), NOT paper reproduction. Read-only, CPU: reads the
-    # parquet `capture` already wrote and prints the Div/IPR non-degeneracy verdict. Recomputes
-    # nothing. Run it after `capture` (or `capture-test`).
-    python src/diversity_gate.py --config configs/capture-config.yaml 2>&1 | tee logs/diversity-gate.log
+    # [step-diversity experiment] Read-only, CPU: reads the diversity parquet and prints the Div/IPR
+    # non-degeneracy verdict. Run it after `capture-diversity`.
+    python src/diversity_gate.py --config configs/capture-diversity.yaml 2>&1 | tee logs/diversity-gate.log
     ;;
 
   masks-sweep)

@@ -1,0 +1,12 @@
+# Step-diversity experiment capture (SEPARATE from the paper-reproduction capture).
+# Own output_dir + strengths_path so it never touches data/spectral or the reproduction parquet.
+# A fresh output_dir has no cached npz, so this recomputes gradients + SVD and emits Div/IPR.
+model_name: Qwen/Qwen3-1.7B-Base
+data_path: data/train-2k-segmented.jsonl
+output_dir: data/spectral-diversity
+strengths_path: data/spectral-strengths-diversity.parquet
+energy_cutoff: 0.95
+chunk_size: 1024
+dtype: bfloat16
+device: cuda
+attn_implementation: sdpa
