@@ -103,7 +103,7 @@ def main() -> None:
             assert deviation < 1e-2, "analytic gradient does not match autograd"
 
     rows, started, computed, resumed = [], time.time(), 0, 0
-    grad_times, svd_times = [], []  # per-computed-sample; SVD isolated (paper omits its cost, R3)
+    grad_times, svd_times, div_times = [], [], []  # per-computed-sample; SVD/Div isolated (R3)
     for index, record in enumerate(records):
         response_start, response_end = record["response_token_span"]
         step_spans = record_step_spans(record)
@@ -120,6 +120,17 @@ def main() -> None:
                     "n_response_tokens": response_end - response_start,
                     "n_steps": len(step_spans),
                     "step_strengths": [float(x) for x in cached["step_strengths"]],
+                    # older npz files predate these; fall back to empty
+                    "step_diversity": (
+                        [float(x) for x in cached["step_diversity"]]
+                        if "step_diversity" in cached
+                        else []
+                    ),
+                    "step_novelty": (
+                        [float(x) for x in cached["step_novelty"]]
+                        if "step_novelty" in cached
+                        else []
+                    ),
                 }
             )
             resumed += 1
@@ -141,6 +152,7 @@ def main() -> None:
             energy_cutoff=config["energy_cutoff"],
         )
         svd_times.append(result.svd_seconds)  # SVD wall time, cuda-synchronized inside
+        div_times.append(result.diversity_seconds)  # Div + IPR wall time (feasibility gate)
         del gradient_matrix
 
         # per-sample spectrum written before appending the row, so the .npz is the durable
@@ -150,6 +162,8 @@ def main() -> None:
             k_star=result.k_star,
             singular_values=result.singular_values.numpy(),
             step_strengths=np.asarray(result.step_strengths, dtype=np.float32),
+            step_diversity=np.asarray(result.step_diversity, dtype=np.float32),
+            step_novelty=np.asarray(result.step_novelty, dtype=np.float32),
         )
         rows.append(
             {
@@ -158,6 +172,8 @@ def main() -> None:
                 "n_response_tokens": response_end - response_start,
                 "n_steps": len(step_spans),
                 "step_strengths": result.step_strengths,
+                "step_diversity": result.step_diversity,
+                "step_novelty": result.step_novelty,
             }
         )
         computed += 1
@@ -184,6 +200,14 @@ def main() -> None:
             f"median={statistics.median(svd_times) * 1e3:.0f}ms max={max(svd_times) * 1e3:.0f}ms "
             f"total={total_svd:.0f}s  ({100 * total_svd / max(total_grad + total_svd, 1e-9):.0f}% of gradient+SVD)"
         )
+    if div_times:  # feasibility gate: Div + IPR reuse the SVD, must cost << the SVD itself
+        mean_div, mean_svd = statistics.mean(div_times), statistics.mean(svd_times)
+        print(
+            f"Div+IPR: mean={mean_div * 1e3:.1f}ms/sample "
+            f"median={statistics.median(div_times) * 1e3:.1f}ms  "
+            f"= {100 * mean_div / max(mean_svd, 1e-9):.1f}% of SVD  "
+            f"(feasibility gate: want << 100%)"
+        )
     print(f"k* : mean={frame.k_star.mean():.1f} median={frame.k_star.median():.0f} max={frame.k_star.max()}")
     ratio = (frame.k_star / frame.n_response_tokens).mean()
     print(f"k*/T mean ratio = {ratio:.4f}  (low-rank premise holds if << 1)")
@@ -195,6 +219,25 @@ def main() -> None:
         f"median={quantiles[1]:.4f} p90={quantiles[2]:.4f} max={strengths.max():.4f}"
     )
     print(f"strength spread (p90/p10) = {quantiles[2] / max(quantiles[0], 1e-12):.1f}x  (flat => selection drops little)")
+
+    # NON-DEGENERACY GATE (plan phase 2): Div / IPR must be spread out on real data, not collapsed.
+    # A degenerate metric (e.g. the discarded leave-step-out residual at T>>d) shows ~0 std here.
+    if "step_diversity" in frame and frame.step_diversity.map(len).sum() > 0:
+        div = np.concatenate([np.asarray(row) for row in frame.step_diversity if len(row)])
+        dq = np.quantile(div, [0.1, 0.5, 0.9])
+        print(
+            f"Div (residual frac): mean={div.mean():.4f} std={div.std():.4f} "
+            f"p10={dq[0]:.4f} median={dq[1]:.4f} p90={dq[2]:.4f}  "
+            f"[non-degeneracy gate: std must be clearly > 0]"
+        )
+    if "step_novelty" in frame and frame.step_novelty.map(len).sum() > 0:
+        nov = np.concatenate([np.asarray(row) for row in frame.step_novelty if len(row)])
+        nq = np.quantile(nov, [0.1, 0.5, 0.9])
+        print(
+            f"IPR novelty (eff #modes): mean={nov.mean():.2f} std={nov.std():.2f} "
+            f"p10={nq[0]:.2f} median={nq[1]:.2f} p90={nq[2]:.2f} max={nov.max():.2f}  "
+            f"[non-degeneracy gate: spread across [1, k*] expected]"
+        )
 
 
 if __name__ == "__main__":
