@@ -71,18 +71,42 @@ def score_file(path: Path) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/eval-config.yaml")
+    # --config is optional: the shell launcher (scripts/eval.sh) passes every setting as a CLI
+    # flag instead of a yaml. When both are given, CLI flags override the yaml.
+    parser.add_argument("--config")
     parser.add_argument("--model", help="checkpoint path")
     parser.add_argument("--tag", help="short name used in output filenames (default: dir name)")
     parser.add_argument("--benchmarks", default="all")
     parser.add_argument("--rescore", help="score an existing raw generations file and exit")
+    # generation/sampling settings (override the yaml, or stand in for it entirely)
+    parser.add_argument("--temperature", type=float)
+    parser.add_argument("--top-p", type=float)
+    parser.add_argument("--n-samples", type=int)
+    parser.add_argument("--max-tokens", type=int)
+    parser.add_argument("--max-model-len", type=int)
+    parser.add_argument("--gpu-memory-utilization", type=float)
+    parser.add_argument("--seed", type=int)
+    parser.add_argument("--raw-dir")
+    parser.add_argument("--results-dir")
     args = parser.parse_args()
 
     if args.rescore:
         print(json.dumps(score_file(Path(args.rescore)), indent=2))
         return
 
-    config = yaml.safe_load(Path(args.config).read_text())
+    config = yaml.safe_load(Path(args.config).read_text()) if args.config else {}
+    overrides = {
+        "temperature": args.temperature,
+        "top_p": args.top_p,
+        "n_samples": args.n_samples,
+        "max_tokens": args.max_tokens,
+        "max_model_len": args.max_model_len,
+        "gpu_memory_utilization": args.gpu_memory_utilization,
+        "seed": args.seed,
+        "raw_dir": args.raw_dir,
+        "results_dir": args.results_dir,
+    }
+    config.update({key: value for key, value in overrides.items() if value is not None})
     tag = args.tag or Path(args.model).name
     names = list(BENCHMARKS) if args.benchmarks == "all" else args.benchmarks.split(",")
 

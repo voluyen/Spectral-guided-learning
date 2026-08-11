@@ -74,7 +74,10 @@ def build_training_arguments(config: dict) -> TrainingArguments:
         use_cpu=not on_gpu,
         gradient_checkpointing=on_gpu,
         logging_steps=config.get("logging_steps", 5),
-        save_strategy="epoch",
+        # save_strategy "epoch" (default) or "steps" (then save_steps controls the interval);
+        # "no" disables intermediate checkpoints (final trainer.save_model still runs).
+        save_strategy=config.get("save_strategy", "epoch"),
+        save_steps=config.get("save_steps", 500),
         save_total_limit=config.get("save_total_limit", 6),
         report_to=[],
         seed=config.get("seed", 42),
@@ -84,11 +87,53 @@ def build_training_arguments(config: dict) -> TrainingArguments:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", required=True)
+    # --config is optional: a shell launcher (scripts/train.sh) can pass every setting as a CLI
+    # flag instead of a yaml. When both are given, CLI flags override the yaml. When neither
+    # supplies model_name/data_path/output_dir, we fail with a clear message below.
+    parser.add_argument("--config")
     parser.add_argument("--smoke", action="store_true", help="tiny run to validate the setup")
+    parser.add_argument("--model-name")
+    parser.add_argument("--data-path")
+    parser.add_argument("--output-dir")
+    parser.add_argument("--epochs", type=int)
+    parser.add_argument("--learning-rate", type=float)
+    parser.add_argument("--min-learning-rate", type=float)
+    parser.add_argument("--warmup-ratio", type=float)
+    parser.add_argument("--per-device-batch-size", type=int)
+    parser.add_argument("--gradient-accumulation-steps", type=int)
+    parser.add_argument("--attn-implementation")
+    parser.add_argument("--seed", type=int)
+    parser.add_argument("--logging-steps", type=int)
+    # checkpointing
+    parser.add_argument("--save-strategy", choices=["epoch", "steps", "no"])
+    parser.add_argument("--save-steps", type=int, help="interval when --save-strategy=steps")
+    parser.add_argument("--save-total-limit", type=int)
     args = parser.parse_args()
 
-    config = yaml.safe_load(Path(args.config).read_text())
+    config = yaml.safe_load(Path(args.config).read_text()) if args.config else {}
+    overrides = {
+        "model_name": args.model_name,
+        "data_path": args.data_path,
+        "output_dir": args.output_dir,
+        "epochs": args.epochs,
+        "learning_rate": args.learning_rate,
+        "min_learning_rate": args.min_learning_rate,
+        "warmup_ratio": args.warmup_ratio,
+        "per_device_batch_size": args.per_device_batch_size,
+        "gradient_accumulation_steps": args.gradient_accumulation_steps,
+        "attn_implementation": args.attn_implementation,
+        "seed": args.seed,
+        "logging_steps": args.logging_steps,
+        "save_strategy": args.save_strategy,
+        "save_steps": args.save_steps,
+        "save_total_limit": args.save_total_limit,
+    }
+    config.update({key: value for key, value in overrides.items() if value is not None})
+
+    missing = [key for key in ("model_name", "data_path", "output_dir") if key not in config]
+    if missing:
+        parser.error(f"missing required settings (pass via --config or CLI flags): {missing}")
+
     tokenizer = AutoTokenizer.from_pretrained(config["model_name"])
     dataset = MaskedSFTDataset(config["data_path"])
 
