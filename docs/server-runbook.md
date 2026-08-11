@@ -41,7 +41,7 @@ Thêm vào `~/.bashrc` để không mất khi reconnect SSH.
 
 ```bash
 python -c "import torch; print(torch.cuda.get_device_name(0))"
-python -m pytest -q                                    # 56 tests, ~2 giây
+python -m pytest -q                                    # pytest tự in số test đã chạy, ~2 giây
 PYTHONPATH=src python scripts/smoke_test_pipeline.py   # end-to-end với model tí hon, CPU
 ```
 
@@ -67,6 +67,33 @@ Detach: `Ctrl-b d`. Attach lại: `tmux attach -t spectral`.
 
 Script tự activate `.venv` (nếu có) và tạo `logs/`. Mỗi stage ghi ra đĩa, stage sau đọc file đó
 nên dừng giữa chừng rồi chạy tiếp được — trừ `train`, xem mục Hạn chế.
+
+### 4b. Máy trống — bộ script setup / train / eval / push
+
+Cho server chưa cài gì sẵn. Mỗi việc một script nhỏ, self-contained (param nằm ngay đầu mỗi
+script, sửa trực tiếp trong đó). Không đụng tới `data`/`capture`/`masks`: các stage đó vẫn chạy
+riêng bằng `run-pipeline.sh` vì có gate bắt buộc dừng lại xem output (mục 5).
+
+```bash
+export HF_TOKEN=hf_...                       # bắt buộc cho push (và data nếu gọi run-pipeline.sh)
+./scripts/setup.sh                           # venv + torch cu121 + requirements.txt, check GPU
+./scripts/train-vanilla.sh                   # train nhánh vanilla (torchrun theo OPTS, tee ra logs/)
+./scripts/train-spectral.sh                  # train nhánh spectral
+./scripts/eval.sh checkpoints/vanilla vanilla   # vLLM generate + score 1 checkpoint
+./scripts/eval.sh checkpoints/spectral spectral
+python src/compare_results.py                # in bảng so sánh 2 kết quả
+./scripts/push.sh                            # push checkpoint (bỏ checkpoint-*/ trung gian) + log lên HF
+./scripts/run.sh                             # gọi toàn bộ chuỗi trên thành 1 pipeline
+```
+
+Hai nhánh có file train riêng (`train-vanilla.sh` / `train-spectral.sh`) — chỉnh hyperparameter
+từng nhánh độc lập; chúng chỉ khác nhau ở data file + thư mục checkpoint. `eval.sh` không biết
+variant: nó eval đúng một checkpoint theo `MODEL`/`TAG` đặt sẵn trong script (arg 1 = model path,
+arg 2 = tag để đè); mọi tham số generate cũng nằm trong `eval.sh`. Muốn eval một epoch cụ thể thì
+trỏ tới `checkpoints/<variant>/checkpoint-*`. `push.sh` vẫn nhận tên variant làm arg.
+
+Push lên `HF_NAMESPACE/HF_REPO_PREFIX-<variant>` (mặc định `spectral-guided-learning-<variant>`,
+private). Set `HF_NAMESPACE` ở đầu `scripts/push.sh` trước khi push.
 
 ### Thứ tự và output từng stage
 
@@ -100,20 +127,26 @@ spectral p=0.95            22.8%   23.3%          19.4%   20.3%       66.7%
 ```
 
 Nếu **cả hai** tỉ lệ đều ~0% thì `train-spectral.jsonl` trùng `train-vanilla.jsonl` — chạy 2 run
-là vô nghĩa. p=0.95 là giá trị của paper (không phải tham số tune), khá "bao trùm", nên đây là
-rủi ro thật chứ không phải lo xa.
+là vô nghĩa. `p=0.95` **không phải giá trị công bố của paper** (Eq. 8 không có số cụ thể nào cho
+`p` — xem `docs/system-architecture.md`), mà là lựa chọn kỹ thuật, khá "bao trùm", nên đây là
+rủi ro thật chứ không phải lo xa. Trước khi chạy `masks` chính thức, cân nhắc
+`python src/build_masks.py --config configs/data-config.yaml --sweep 0.7,0.8,0.9,0.95` (vài giây,
+không train lại, không ghi file dataset) để chọn `p` bằng số liệu drop-ratio thay vì đoán.
 
 ---
 
 ## 6. Hạn chế đã biết
 
-**Disk khi train.** `save_strategy=epoch` + `save_total_limit=6`, mà HF Trainer lưu cả optimizer
-state: mỗi checkpoint ≈ 3.4GB (model bf16) + ~14GB (Adam states) ≈ **17GB**. 6 epoch × 2 run ≈
-**200GB**. Không đủ chỗ thì thêm `save_only_model: true` vào 2 file `configs/train-*.yaml` (chỉ
-giữ weights, ~3.4GB/checkpoint) hoặc hạ `save_total_limit`.
+**Disk khi train.** Mặc định `SAVE_STRATEGY=epoch` + `SAVE_TOTAL_LIMIT=6` (đặt ở đầu mỗi
+`train-*.sh`), mà HF Trainer lưu cả optimizer state: mỗi checkpoint ≈ 3.4GB (model bf16) + ~14GB
+(Adam states) ≈ **17GB**. 6 epoch × 2 run ≈ **200GB**. Không đủ chỗ thì hạ `SAVE_TOTAL_LIMIT`, hoặc
+`SAVE_STRATEGY=no` để chỉ giữ model final. Đổi `SAVE_STRATEGY=steps` + `SAVE_STEPS=N` để lưu dày
+hơn theo step (tốn thêm disk tương ứng).
 
-**Train không resume.** `train_sft.py` chưa truyền `resume_from_checkpoint`, crash giữa chừng là
-chạy lại từ đầu. Với run 15h thì nên bổ sung trước khi bắt đầu.
+**Train không resume, capture thì có.** `train_sft.py` chưa truyền `resume_from_checkpoint`, crash
+giữa chừng là chạy lại từ đầu — với run 15h thì nên bổ sung trước khi bắt đầu. `gradient_capture.py`
+ngược lại tự resume: mỗi sample ghi `.npz` riêng ngay khi xong, và lần chạy sau bỏ qua mọi id đã
+có `.npz` — crash giữa `capture` chỉ mất phần chưa ghi.
 
 **OOM ở seq 16k.** Thứ tự xử lý: đổi optimizer sang `adamw_bnb_8bit` (tiết kiệm ~10GB) → ZeRO-2
 CPU offload → hạ cutoff xuống 12k trong `configs/data-config.yaml` (phải chạy lại từ stage `data`).

@@ -1,5 +1,63 @@
 # Project Changelog
 
+## 2026-08-11 — Self-contained OPTS-style train/eval/setup/push scripts + HF push
+
+**Added** — `scripts/{setup,train-vanilla,train-spectral,eval,push,run}.sh`, replacing
+`run-on-modal.sh`. Self-contained shell scripts (every setting inline at the top, edited in place —
+no yaml, no shared config file): `setup` (venv + CUDA 12 torch + `requirements.txt`), a separate
+train script per variant (`torchrun` + an `OPTS+=` flag list mirroring a standard
+distributed-launch script — split so each variant's hyperparameters are managed independently; the
+two differ only in data file + checkpoint dir), `eval` (vLLM generate + score one checkpoint;
+variant-agnostic — takes a model path + tag, all generation settings inline), `push` (uploads the
+finished checkpoint + training log to a per-variant HF Hub repo, excluding intermediate
+`checkpoint-*/` epoch saves — those hold optimizer state and are local-resume-only, ~17GB each).
+`run.sh` chains setup→train-vanilla→train-spectral→eval(each checkpoint)→`compare_results.py`→push.
+`push` takes a variant name as an arg to limit the run. Deliberately excludes `data`/`capture`/
+`masks` — those keep the mandatory human decision gate from the 2026-08-07 entry below and stay on
+`run-pipeline.sh`.
+
+**Added** — checkpoint cadence is now configurable: `train_sft.py` takes `--save-strategy`
+(`epoch`|`steps`|`no`), `--save-steps`, `--save-total-limit`, surfaced as `SAVE_STRATEGY`/
+`SAVE_STEPS`/`SAVE_TOTAL_LIMIT` in each train script (default unchanged: per-epoch, keep 6). Set
+`SAVE_STRATEGY=steps` to save every `SAVE_STEPS` optimizer steps.
+
+**Changed** — `train_sft.py` + `evaluate.py`: `--config` is now optional on both; every setting is
+also exposed as a CLI flag (train: `--model-name`/`--data-path`/`--output-dir`/`--epochs`/`--learning-rate`/
+`--min-learning-rate`/`--warmup-ratio`/`--per-device-batch-size`/`--gradient-accumulation-steps`/
+`--attn-implementation`/`--seed`/`--logging-steps`/`--save-strategy`/`--save-steps`/`--save-total-limit`;
+eval: `--temperature`/`--top-p`/`--n-samples`/
+`--max-tokens`/`--max-model-len`/`--gpu-memory-utilization`/`--seed`/`--raw-dir`/`--results-dir`).
+CLI flags override the yaml when both are given; with no `--config` the run is configured entirely
+from flags (train fails clearly if model_name/data_path/output_dir are absent). Lets the shell
+scripts drive every setting via OPTS without any yaml. Existing `--config <yaml>` invocations
+(e.g. `run-pipeline.sh`) are unchanged.
+
+## 2026-08-07 — Capture resume/perf, p-sweep decision gate restored, Modal runner
+
+**Added** — `build_masks.py --sweep p1,p2,...`: reports step-drop/token-drop ratios per candidate
+`p` from the spectral strengths already on disk (no retrain, no dataset file written). Restores
+the decision gate the 2026-08-05 plan pass had dropped after mislabeling `p=0.95` as the paper's
+published value — Eq. 8 does not publish one; see `docs/system-architecture.md`. Without this
+gate an uninformed `p` near 1.0 can make the spectral run statistically indistinguishable from
+vanilla by construction, silently invalidating the A/B comparison.
+
+**Added** — `scripts/run-on-modal.sh`: self-contained runner for a clean container/cloud GPU
+(installs deps, checks GPU/HF token; `run-pipeline.sh` assumes a preconfigured server). Adds a
+`capture-test N` stage that times the SVD call on N samples so phase 3 can be sized before the
+full corpus run — the paper never reports SVD cost.
+
+**Changed** — `gradient_capture.py`: the float32 unembedding is cast once per corpus run instead
+of once per sequence; each sample's `.npz` is now the resume checkpoint — a run restarted after
+an interruption skips every id with an existing `.npz` instead of recapturing from scratch.
+
+**Fixed** — `verify_against_autograd` capped the checked span to 512 target positions; the
+autograd reference materializes a full (N×V) fp32 logits matrix and backward graph, which OOMs a
+40GB GPU at N~16k / V~152k. The identity is per-position, so the cap is as conclusive at bounded
+memory; the main capture path (which chunks the unembedding) was never affected.
+
+**Verified** — new `test_build_masks.py` covers the sweep against hand-computed selections and
+confirms it never writes to disk.
+
 ## 2026-08-06 — Phase 2 segmentation made linear-time
 
 **Fixed** — `segment_response_token_spans()` re-tokenized the cumulative prefix once per step,
