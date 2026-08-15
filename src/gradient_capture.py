@@ -1,9 +1,12 @@
 """Phase 3: capture loss gradients, run per-sample SVD, emit step spectral strengths.
 
-    python src/gradient_capture.py --config configs/capture-config.yaml [--verify] [--limit N]
+    python src/gradient_capture.py --model-name Qwen/Qwen3-8B \
+        --data-path data/qwen3-8b/train-s1k-segmented.jsonl --output-dir data/qwen3-8b/spectral \
+        --strengths-path data/qwen3-8b/spectral-strengths.parquet --verify [--limit N]
 
 --verify cross-checks the analytic gradient against autograd on the first samples before
-processing the corpus, since the whole pipeline rests on that identity.
+processing the corpus, since the whole pipeline rests on that identity. --config points at a
+yaml with the same fields as a fallback/override base; CLI flags always win when both are given.
 """
 
 import argparse
@@ -41,44 +44,85 @@ def to_gradient_rows(step_spans: list[tuple[int, int]], response_start: int) -> 
     return [(start - response_start, end - response_start) for start, end in step_spans]
 
 
-@torch.no_grad()
 def verify_against_autograd(
     model, input_ids: torch.Tensor, span: tuple[int, int], max_positions: int = 512
 ) -> float:
     """Max absolute deviation between analytic and autograd gradients (float32).
 
-    The autograd reference materializes a full (N x V) fp32 logits matrix and its backward
-    graph; at N ~ 16k response tokens and V ~ 152k that is ~10 GB each, enough to OOM a 40 GB
-    GPU. The identity is per-position, so the span is capped to the first `max_positions`
-    targets — just as conclusive, at bounded memory. The main capture path is unaffected (it
-    chunks the unembedding), so only this check needed the cap.
+    The autograd reference needs a backward graph, but only through the small linear
+    unembedding + softmax + CE step, not through the transformer backbone: running
+    model.model(...) itself under torch.enable_grad() (as an earlier version of this
+    function did, twice — once per call below) builds a full per-layer backward graph
+    for the *entire* sequence, retained until GC'd even though only the final hidden
+    state is used. At long cutoffs (paper Table 3: 32768) that graph alone is enough to
+    OOM a 40 GB GPU — independent of chunk_size, and just as expensive as if the main
+    capture path itself needed a backward pass (it doesn't: capture_sequence_gradients
+    is pure @torch.no_grad(), Eq. 1's closed form). The fix: run the backbone forward
+    once under no_grad (identical cost to the main capture path), then build the small
+    backward graph only on the already-detached hidden states, restricted to the first
+    `max_positions` target rows — just as conclusive, since the identity being checked
+    is per-position.
     """
     start, end = span
     span = (start, min(end, start + max_positions))
-    with torch.enable_grad():
+    with torch.no_grad():
         hidden = model.model(input_ids=input_ids).last_hidden_state[0].detach().float()
-        hidden.requires_grad_(True)
-        rows, targets = shift_for_causal_lm(hidden, input_ids[0], span)
-        logits = rows @ model.get_output_embeddings().weight.float().T
-        torch.nn.functional.cross_entropy(logits, targets, reduction="sum").backward()
-        reference = hidden.grad[span[0] - 1 : span[1] - 1]
+    rows, targets = shift_for_causal_lm(hidden, input_ids[0], span)
 
-    analytic = analytic_hidden_gradients(
-        model.model(input_ids=input_ids).last_hidden_state[0][span[0] - 1 : span[1] - 1],
-        input_ids[0][span[0] : span[1]],
-        model.get_output_embeddings().weight,
-    )
+    autograd_rows = rows.clone().requires_grad_(True)
+    with torch.enable_grad():
+        logits = autograd_rows @ model.get_output_embeddings().weight.float().T
+        torch.nn.functional.cross_entropy(logits, targets, reduction="sum").backward()
+    reference = autograd_rows.grad
+
+    analytic = analytic_hidden_gradients(rows, targets, model.get_output_embeddings().weight)
     return float((analytic - reference).abs().max().item())
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/capture-config.yaml")
+    parser.add_argument("--config", help="optional yaml base; CLI flags below override it")
+    parser.add_argument("--model-name", help="HF model id, e.g. Qwen/Qwen3-8B")
+    parser.add_argument("--data-path", help="segmented jsonl from data_prep.py (Phase 2 output)")
+    parser.add_argument("--output-dir", help="per-sample .npz spectra go here")
+    parser.add_argument("--strengths-path", help="merged parquet of per-sample k*/step strengths")
+    parser.add_argument("--energy-cutoff", type=float, help="k* cumulative-energy threshold (Eq. 4)")
+    parser.add_argument("--chunk-size", type=int, help="positions per chunk (chunk x vocab) when unembedding")
+    parser.add_argument("--dtype", help="model forward dtype, e.g. bfloat16")
+    parser.add_argument("--device", help="cuda | cpu")
+    parser.add_argument("--attn-implementation", help="sdpa | flash_attention_2")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--verify", action="store_true", help="cross-check vs autograd first")
+    parser.add_argument(
+        "--num-shards", type=int, default=1,
+        help="split the corpus across N independent GPU processes (capture is embarrassingly "
+             "parallel per-sample: each shard writes its own .npz files, none overlap). After "
+             "all shards finish, rerun with --num-shards 1 (the default) to merge: every sample "
+             "already has an .npz, so that pass hits the resume path for all of them (no GPU "
+             "work) and just rebuilds strengths_path from what's on disk.",
+    )
+    parser.add_argument("--shard-index", type=int, default=0, help="this process's shard, in [0, num-shards)")
     args = parser.parse_args()
 
-    config = yaml.safe_load(Path(args.config).read_text())
+    config = yaml.safe_load(Path(args.config).read_text()) if args.config else {}
+    overrides = {
+        "model_name": args.model_name,
+        "data_path": args.data_path,
+        "output_dir": args.output_dir,
+        "strengths_path": args.strengths_path,
+        "energy_cutoff": args.energy_cutoff,
+        "chunk_size": args.chunk_size,
+        "dtype": args.dtype,
+        "device": args.device,
+        "attn_implementation": args.attn_implementation,
+    }
+    config.update({key: value for key, value in overrides.items() if value is not None})
+    config.setdefault("energy_cutoff", 0.95)
+    config.setdefault("chunk_size", 1024)
+    config.setdefault("dtype", "bfloat16")
+    config.setdefault("device", "cuda")
+    config.setdefault("attn_implementation", "sdpa")
+
     device = config["device"]
     model = AutoModelForCausalLM.from_pretrained(
         config["model_name"],
@@ -90,11 +134,16 @@ def main() -> None:
     output_dir = Path(config["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    sharded = args.num_shards > 1
+    if sharded:
+        records = records[args.shard_index :: args.num_shards]
+        print(f"shard {args.shard_index}/{args.num_shards}: {len(records)} records assigned")
+
     # Cast the unembedding to float32 once for the whole corpus; passed into every
     # capture below so the (V x d) matrix isn't re-cast per sequence (V=151936 for Qwen3).
     unembedding = model.get_output_embeddings().weight.float()
 
-    if args.verify:
+    if args.verify and args.shard_index == 0:
         for record in records[:3]:  # paper-fidelity check on 3 samples before the corpus run
             input_ids = torch.tensor([record["input_ids"]], device=device)
             span = tuple(record["response_token_span"])
@@ -168,6 +217,14 @@ def main() -> None:
 
     if resumed:
         print(f"resumed {resumed} samples from existing npz; computed {computed} fresh")
+
+    if sharded:
+        print(f"shard {args.shard_index}/{args.num_shards} done ({len(rows)} rows) -- not writing "
+              f"{config['strengths_path']} from a partial shard. Once every shard has finished, "
+              f"rerun with --num-shards 1 (default) to merge: all .npz already exist, so that "
+              f"pass hits the resume path for every record and just rebuilds the full parquet.")
+        return
+
     frame = pd.DataFrame(rows)
     frame.to_parquet(config["strengths_path"])
     print(f"wrote {len(frame)} rows -> {config['strengths_path']} (+ per-sample npz in {output_dir})")

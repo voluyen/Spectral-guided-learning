@@ -1,16 +1,16 @@
 """Phase 4: apply the energy threshold p, report drop stats, emit training masks.
 
-    python src/build_masks.py --config configs/data-config.yaml            # spectral masks
-    python src/build_masks.py --config configs/data-config.yaml --vanilla  # + all-ones baseline
-    python src/build_masks.py --config configs/data-config.yaml --sweep 0.7,0.8,0.9,0.95
+    python src/build_masks.py --data-path data/train-2k-segmented.jsonl --energy-threshold-p 0.95
+    python src/build_masks.py --data-path data/train-2k-segmented.jsonl --energy-threshold-p 0.95 --vanilla
+    python src/build_masks.py --data-path data/train-2k-segmented.jsonl --sweep 0.7,0.8,0.9,0.95
                                                                              # sensitivity check only
 
 The paper's Eq. 8 leaves p unspecified — it is not published anywhere in the paper (main text
-or appendix). `energy_threshold_p` in configs/data-config.yaml is therefore an engineering
-choice, not a value taken from the paper. Use `--sweep` to check step-drop/token-drop ratios
-across candidate values (cheap: reuses the already-computed spectral strengths, no retraining)
-before committing to one value for the training runs. The vanilla baseline is emitted by the
-same code path as the spectral masks so the two training runs differ only in the loss mask.
+or appendix). `--energy-threshold-p` is therefore an engineering choice, not a value taken from
+the paper. Use `--sweep` to check step-drop/token-drop ratios across candidate values (cheap:
+reuses the already-computed spectral strengths, no retraining) before committing to one value
+for the training runs. The vanilla baseline is emitted by the same code path as the spectral
+masks so the two training runs differ only in the loss mask.
 """
 
 import argparse
@@ -106,7 +106,9 @@ def summarize(stats: list[dict]) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/data-config.yaml")
+    parser.add_argument("--config", help="optional yaml base; CLI flags below override it")
+    parser.add_argument("--data-path", help="segmented jsonl from data_prep.py (Phase 2 output)")
+    parser.add_argument("--energy-threshold-p", type=float, help="Eq. 8 threshold p (engineering choice)")
     parser.add_argument("--strengths", default="data/spectral-strengths.parquet")
     parser.add_argument("--vanilla", action="store_true", help="also emit the all-ones baseline")
     parser.add_argument(
@@ -116,7 +118,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    config = yaml.safe_load(Path(args.config).read_text())
+    config = yaml.safe_load(Path(args.config).read_text()) if args.config else {}
+    overrides = {"output_path": args.data_path, "energy_threshold_p": args.energy_threshold_p}
+    config.update({key: value for key, value in overrides.items() if value is not None})
+
     with open(config["output_path"]) as handle:
         records = [json.loads(line) for line in handle]
 

@@ -2,7 +2,13 @@
 
     python src/evaluate.py --model checkpoints/vanilla --benchmarks all
     python src/evaluate.py --model checkpoints/spectral --benchmarks math500,aime24
-    python src/evaluate.py --rescore results/raw/spectral-math500.jsonl   # no GPU needed
+    python src/evaluate.py --rescore results/spectral/raw/math500.jsonl   # no GPU needed
+
+Each run gets its own subtree under --results-dir, keyed by --tag, so different
+tracks/checkpoints never mix files in one flat directory:
+
+    results/<tag>/summary.json
+    results/<tag>/raw/<benchmark>.jsonl
 
 Raw generations are persisted so scoring can be revised without regenerating.
 """
@@ -17,16 +23,61 @@ from answer_scoring import score_generation
 from benchmarks import BENCHMARKS
 
 
+def build_prompts(model_path: str, records: list[dict], config: dict) -> list[str]:
+    """Wrap each benchmark's plain instruction into a chat-templated prompt when requested.
+
+    Base models (chat_template unset, e.g. Qwen3-0.6B-Base) get the raw instruction text
+    unchanged. Instruct/hybrid-thinking models (Qwen3-8B, Qwen2.5-7B-Instruct) need their own
+    chat template so generation actually starts from "<|im_start|>assistant\n" the way they
+    were trained/aligned, instead of continuing raw text as a base model would.
+    """
+    if not config.get("chat_template"):
+        return [record["prompt"] for record in records]
+
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(config.get("base_model") or model_path)
+    return [
+        tokenizer.apply_chat_template(
+            [{"role": "user", "content": record["prompt"]}],
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=config.get("enable_thinking", True),
+        )
+        for record in records
+    ]
+
+
 def generate(model_path: str, records: list[dict], config: dict) -> list[list[dict]]:
     """Generate n samples per problem. Returns per-problem lists of {text, finish_reason}."""
     from vllm import LLM, SamplingParams
 
-    llm = LLM(
-        model=model_path,
-        max_model_len=config["max_model_len"],
-        gpu_memory_utilization=config.get("gpu_memory_utilization", 0.9),
-        dtype="bfloat16",
-    )
+    prompts = build_prompts(model_path, records, config)
+
+    # lora_adapter: model_path is an adapter-only checkpoint (--no-lora-merge in train_sft.py)
+    # saved on top of config["base_model"] — load the base weights once via vLLM's native LoRA
+    # support instead of a second merged ~16GB copy per model (see plans/reports handoff).
+    if config.get("lora_adapter"):
+        from vllm.lora.request import LoRARequest
+
+        llm = LLM(
+            model=config["base_model"],
+            max_model_len=config["max_model_len"],
+            gpu_memory_utilization=config.get("gpu_memory_utilization", 0.9),
+            dtype="bfloat16",
+            enable_lora=True,
+            max_lora_rank=config.get("lora_r", 16),
+        )
+        lora_request = LoRARequest("adapter", 1, model_path)
+    else:
+        llm = LLM(
+            model=model_path,
+            max_model_len=config["max_model_len"],
+            gpu_memory_utilization=config.get("gpu_memory_utilization", 0.9),
+            dtype="bfloat16",
+        )
+        lora_request = None
+
     sampling = SamplingParams(
         n=config["n_samples"],
         temperature=config["temperature"],
@@ -34,7 +85,7 @@ def generate(model_path: str, records: list[dict], config: dict) -> list[list[di
         max_tokens=config["max_tokens"],
         seed=config.get("seed", 42),
     )
-    outputs = llm.generate([record["prompt"] for record in records], sampling)
+    outputs = llm.generate(prompts, sampling, lora_request=lora_request)
     return [
         [
             {"text": completion.text, "finish_reason": completion.finish_reason}
@@ -71,7 +122,7 @@ def score_file(path: Path) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    # --config is optional: the shell launcher (scripts/eval.sh) passes every setting as a CLI
+    # --config is optional: the shell launchers (scripts/<family>/eval/eval_<model>.sh) pass every setting as a CLI
     # flag instead of a yaml. When both are given, CLI flags override the yaml.
     parser.add_argument("--config")
     parser.add_argument("--model", help="checkpoint path")
@@ -86,8 +137,13 @@ def main() -> None:
     parser.add_argument("--max-model-len", type=int)
     parser.add_argument("--gpu-memory-utilization", type=float)
     parser.add_argument("--seed", type=int)
-    parser.add_argument("--raw-dir")
-    parser.add_argument("--results-dir")
+    parser.add_argument("--results-dir", help="root dir; each run writes under <results-dir>/<tag>/")
+    # chat template (instruct/hybrid-thinking models) + LoRA adapter (--no-lora-merge checkpoints)
+    parser.add_argument("--chat-template", action=argparse.BooleanOptionalAction)
+    parser.add_argument("--enable-thinking", action=argparse.BooleanOptionalAction)
+    parser.add_argument("--base-model", help="base model for chat template / LoRA adapter loading")
+    parser.add_argument("--lora-adapter", action=argparse.BooleanOptionalAction)
+    parser.add_argument("--lora-r", type=int, help="adapter rank, for vLLM's max_lora_rank")
     args = parser.parse_args()
 
     if args.rescore:
@@ -103,19 +159,26 @@ def main() -> None:
         "max_model_len": args.max_model_len,
         "gpu_memory_utilization": args.gpu_memory_utilization,
         "seed": args.seed,
-        "raw_dir": args.raw_dir,
         "results_dir": args.results_dir,
+        "chat_template": args.chat_template,
+        "enable_thinking": args.enable_thinking,
+        "base_model": args.base_model,
+        "lora_adapter": args.lora_adapter,
+        "lora_r": args.lora_r,
     }
     config.update({key: value for key, value in overrides.items() if value is not None})
     tag = args.tag or Path(args.model).name
     names = list(BENCHMARKS) if args.benchmarks == "all" else args.benchmarks.split(",")
 
-    raw_dir = Path(config["raw_dir"])
+    # everything for this run lives under one subtree, instead of a flat results/ dir
+    # mixing raw generations and summaries from every tag/track together.
+    run_dir = Path(config["results_dir"]) / tag
+    raw_dir = run_dir / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
     summaries = []
 
     for name in names:
-        raw_path = raw_dir / f"{tag}-{name}.jsonl"
+        raw_path = raw_dir / f"{name}.jsonl"
         if raw_path.exists():
             print(f"[{name}] reusing existing generations")
         else:
@@ -144,8 +207,7 @@ def main() -> None:
             f"truncated = {summary['truncation_rate']:.1%}"
         )
 
-    results_path = Path(config["results_dir"]) / f"{tag}-summary.json"
-    results_path.parent.mkdir(parents=True, exist_ok=True)
+    results_path = run_dir / "summary.json"
     results_path.write_text(json.dumps(summaries, indent=2))
     average = sum(s["accuracy"] for s in summaries) / len(summaries)
     print(f"\n{tag}: average accuracy = {average:.1%} -> {results_path}")

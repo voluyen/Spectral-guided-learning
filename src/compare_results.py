@@ -13,14 +13,12 @@ PRIMARY_BENCHMARKS = {"math500", "olympiadbench"}
 
 
 def load_summaries(results_dir: Path) -> dict[str, dict[str, float]]:
-    """{model_tag: {benchmark: accuracy}} from results/{tag}-summary.json files."""
+    """{model_tag: {benchmark: accuracy}} from results/<tag>/summary.json files."""
     models = {}
-    for path in sorted(results_dir.glob("*-summary.json")):
+    for path in sorted(results_dir.glob("*/summary.json")):
         rows = json.loads(path.read_text())
-        tag = rows[0]["model"] if rows else path.stem.replace("-summary", "")
-        models[tag] = {
-            row["benchmark"].split("-", 1)[-1]: row["accuracy"] for row in rows
-        }
+        tag = rows[0]["model"] if rows else path.parent.name
+        models[tag] = {row["benchmark"]: row["accuracy"] for row in rows}
     return models
 
 
@@ -58,7 +56,7 @@ def main() -> None:
     results_dir = Path(args.results_dir)
     models = load_summaries(results_dir)
     if not models:
-        raise SystemExit(f"no *-summary.json found in {results_dir}")
+        raise SystemExit(f"no */summary.json found in {results_dir}")
 
     table = format_table(models)
     print(table)

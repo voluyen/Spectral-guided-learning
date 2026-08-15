@@ -5,7 +5,7 @@ set -euo pipefail
 BASE_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${BASE_PATH}"
 
-CUDA_TAG=cu121            # torch wheel tag; match `nvidia-smi` CUDA version
+CUDA_TAG=cu118       
 VENV_DIR=.venv
 INSTALL_FLASH_ATTN=false
 
@@ -15,7 +15,7 @@ if [[ -z "${VIRTUAL_ENV:-}" ]]; then
 fi
 
 python -m pip install --upgrade pip
-python -m pip install torch --index-url "https://download.pytorch.org/whl/${CUDA_TAG}"
+python -m pip install --upgrade torch --index-url "https://download.pytorch.org/whl/${CUDA_TAG}"
 python -m pip install -r requirements.txt
 [[ "${INSTALL_FLASH_ATTN}" == true ]] && python -m pip install flash-attn --no-build-isolation
 
@@ -29,6 +29,6 @@ if [[ -n "${HF_TOKEN:-}" ]]; then
   python -c "from huggingface_hub import login; import os; login(os.environ['HF_TOKEN'])"
   echo "HF login OK"
 else
-  echo "WARN: HF_TOKEN not set (needed for push.sh)"
+  echo "WARN: HF_TOKEN not set (needed for gated datasets, e.g. GPQA in evaluate.py)"
 fi
 echo "setup done"

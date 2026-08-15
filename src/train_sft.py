@@ -1,9 +1,10 @@
 """Phase 5: masked supervised fine-tuning (paper Eq. 9).
 
-    python src/train_sft.py --config configs/train-vanilla.yaml
-    python src/train_sft.py --config configs/train-spectral.yaml
+    ./scripts/qwen3/sft/sft_qwen3-1.7b.sh        # vanilla
+    ./scripts/qwen3/spectral/spectral_qwen3-1.7b.sh   # spectral
 
-Both runs share this code path; only the loss mask in the dataset differs.
+Both runs share this code path; only the loss mask in the dataset differs. The shell
+launchers pass every setting as a CLI flag (--config also works, if a yaml is preferred).
 """
 
 import argparse
@@ -12,6 +13,7 @@ from pathlib import Path
 
 import torch
 import yaml
+from peft import LoraConfig, get_peft_model
 from torch.utils.data import Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
 
@@ -73,6 +75,11 @@ def build_training_arguments(config: dict) -> TrainingArguments:
         bf16=on_gpu,
         use_cpu=not on_gpu,
         gradient_checkpointing=on_gpu,
+        # Reentrant checkpointing (the default) re-enters the backward graph and trips DDP's
+        # "mark variable ready only once" assertion when combined with LoRA's frozen base
+        # params (multi-GPU only -- single-GPU runs never wrap the model in DDP, so this never
+        # surfaced before). Non-reentrant checkpointing avoids the double-backward entirely.
+        gradient_checkpointing_kwargs={"use_reentrant": False} if on_gpu else None,
         logging_steps=config.get("logging_steps", 5),
         # save_strategy "epoch" (default) or "steps" (then save_steps controls the interval);
         # "no" disables intermediate checkpoints (final trainer.save_model still runs).
@@ -108,6 +115,19 @@ def main() -> None:
     parser.add_argument("--save-strategy", choices=["epoch", "steps", "no"])
     parser.add_argument("--save-steps", type=int, help="interval when --save-strategy=steps")
     parser.add_argument("--save-total-limit", type=int)
+    # LoRA (optional): trains low-rank adapters instead of full weights. Merged back into the
+    # base model before saving, so output_dir is a normal full checkpoint either way.
+    parser.add_argument("--use-lora", action=argparse.BooleanOptionalAction)
+    parser.add_argument(
+        "--lora-merge", action=argparse.BooleanOptionalAction,
+        help="merge adapters into the base weights before saving (default true); "
+        "--no-lora-merge keeps output_dir as an adapter-only checkpoint (much smaller, "
+        "loadable by vLLM's native LoRA support without a second full-weight copy)",
+    )
+    parser.add_argument("--lora-r", type=int)
+    parser.add_argument("--lora-alpha", type=int)
+    parser.add_argument("--lora-dropout", type=float)
+    parser.add_argument("--lora-target-modules", help="comma-separated module names")
     args = parser.parse_args()
 
     config = yaml.safe_load(Path(args.config).read_text()) if args.config else {}
@@ -127,6 +147,12 @@ def main() -> None:
         "save_strategy": args.save_strategy,
         "save_steps": args.save_steps,
         "save_total_limit": args.save_total_limit,
+        "use_lora": args.use_lora,
+        "lora_merge": args.lora_merge,
+        "lora_r": args.lora_r,
+        "lora_alpha": args.lora_alpha,
+        "lora_dropout": args.lora_dropout,
+        "lora_target_modules": args.lora_target_modules,
     }
     config.update({key: value for key, value in overrides.items() if value is not None})
 
@@ -150,14 +176,45 @@ def main() -> None:
     )
     model.config.use_cache = False
 
+    if config.get("use_lora"):
+        target_modules = config.get(
+            "lora_target_modules", "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+        ).split(",")
+        model = get_peft_model(
+            model,
+            LoraConfig(
+                r=config.get("lora_r", 16),
+                lora_alpha=config.get("lora_alpha", 32),
+                lora_dropout=config.get("lora_dropout", 0.05),
+                target_modules=target_modules,
+                bias="none",
+                task_type="CAUSAL_LM",
+            ),
+        )
+        # gradient checkpointing backprops through a frozen base model here; without this the
+        # graph has no leaf requiring grad and checkpointed activations produce no gradient.
+        model.enable_input_require_grads()
+        model.print_trainable_parameters()
+
     trainer = MaskedSFTTrainer(
         model=model,
         args=build_training_arguments(config),
         train_dataset=dataset,
         data_collator=MaskedSFTCollator(pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id),
+        # lets Trainer write tokenizer files into every checkpoint-N/, not just output_dir at the
+        # end — otherwise intermediate checkpoints aren't loadable by vLLM (evaluate.py) on their own.
+        processing_class=tokenizer,
     )
     result = trainer.train()
-    trainer.save_model(config["output_dir"])
+    if config.get("use_lora") and config.get("lora_merge", True):
+        # merge adapters into the base weights so output_dir is a normal full checkpoint,
+        # loadable by evaluate.py/vLLM exactly like a non-LoRA run.
+        trainer.model.merge_and_unload().save_pretrained(config["output_dir"])
+    else:
+        # --no-lora-merge: trainer.save_model() on a PEFT model saves adapter weights only
+        # (adapter_config.json + adapter_model.safetensors, tens-hundreds of MB) instead of a
+        # full ~16GB checkpoint; evaluate.py loads it as a LoRA adapter on top of the base model.
+        trainer.save_model(config["output_dir"])
     tokenizer.save_pretrained(config["output_dir"])
 
     # evidence for the paper's "fewer supervised tokens" claim, recorded next to the checkpoint

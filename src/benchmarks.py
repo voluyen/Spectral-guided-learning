@@ -70,6 +70,12 @@ def load_olympiadbench() -> list[dict]:
     return records
 
 
+def load_amc12() -> list[dict]:
+    """AI-MO/aimo-validation-amc: 83 AMC 12 problems (2022-2023), matches P-ALIGN Table 3."""
+    rows = load_dataset("AI-MO/aimo-validation-amc", split="train")
+    return _math_records(rows, "problem", "answer")
+
+
 def load_gpqa_diamond() -> list[dict]:
     rows = load_dataset("Idavidrein/gpqa", "gpqa_diamond", split="train")
     records = []
@@ -108,4 +114,5 @@ BENCHMARKS = {
     "math500": load_math500,
     "olympiadbench": load_olympiadbench,
     "gpqa": load_gpqa_diamond,
+    "amc12": load_amc12,
 }

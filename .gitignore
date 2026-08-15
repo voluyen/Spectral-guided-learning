@@ -1,17 +1,21 @@
 .venv/
+.venv-eval/
 __pycache__/
 *.pyc
-data/
-checkpoints/
-results/raw/
+/data/
+/checkpoints/
+/results/
 *.npz
 *.pt
 *.parquet
 .pytest_cache/
-logs/
+/logs/
 
 # Local agent tooling (ClaudeKit) — not part of the reproduction code
 .claude/
+
+# Reference clone of github.com/NEUIR/P-ALIGN (external code, not part of this repo)
+P-ALIGN/
 
 # transient run log at repo root (logs/ dir is already ignored)
 logs-data-prep.txt
