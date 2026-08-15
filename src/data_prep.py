@@ -4,7 +4,12 @@ Output: JSONL with one record per sample containing input_ids, the supervised re
 span, and absolute token spans for every reasoning step. Step text is not stored — it is
 recovered exactly by decoding input_ids[token_start:token_end] (round-trip asserted below).
 
-    python src/data_prep.py --config configs/data-config.yaml
+    python src/data_prep.py --dataset-name VoCuc/s1K-1.1-DeepSeek-R1-Distill-Qwen-32B --n-samples 1050 \
+        --max-tokens 32768 --tokenizer Qwen/Qwen3-8B --output-path data/qwen3-8b/train-s1k-segmented.jsonl
+
+--config points at a yaml with the same fields as a fallback/override base; CLI flags always
+win when both are given (see e.g. scripts/qwen3/data/data_qwen3-8b.sh for the equivalent
+CLI-only pattern used by every phase's shell launcher).
 """
 
 import argparse
@@ -24,7 +29,27 @@ PROMPT_TEMPLATE = "{problem}\n\nPlease reason step by step, and put your final a
 SHUFFLE_BUFFER = 5_000
 
 
-def build_record(tokenizer, problem: str, response: str, max_tokens: int) -> dict | None:
+def build_prompt(tokenizer, problem: str, chat_template: bool, enable_thinking: bool) -> str:
+    """Plain-text continuation prompt (base models) or chat-templated prompt (instruct models).
+
+    enable_thinking is only meaningful for models whose template defines it (e.g. Qwen3); a
+    tokenizer without that concept just ignores the extra kwarg passed to its jinja template.
+    """
+    if not chat_template:
+        return PROMPT_TEMPLATE.format(problem=problem)
+    instruction = PROMPT_TEMPLATE.format(problem=problem)
+    return tokenizer.apply_chat_template(
+        [{"role": "user", "content": instruction}],
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=enable_thinking,
+    )
+
+
+def build_record(
+    tokenizer, problem: str, response: str, max_tokens: int,
+    chat_template: bool = False, enable_thinking: bool = True,
+) -> dict | None:
     """Tokenize one problem/response pair and map its steps to absolute token spans.
 
     Returns None when the sample exceeds `max_tokens`, so over-length samples — the most
@@ -36,7 +61,7 @@ def build_record(tokenizer, problem: str, response: str, max_tokens: int) -> dic
     problem = unicodedata.normalize("NFC", problem)
     response = unicodedata.normalize("NFC", response)
 
-    prompt = PROMPT_TEMPLATE.format(problem=problem)
+    prompt = build_prompt(tokenizer, problem, chat_template, enable_thinking)
     prompt_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
     response_ids, token_starts = encode_with_offsets(tokenizer, response)
     if len(prompt_ids) + len(response_ids) > max_tokens:
@@ -73,11 +98,23 @@ def iter_samples(config: dict):
     dataset = dataset.shuffle(seed=config["seed"], buffer_size=SHUFFLE_BUFFER)
     wanted = config.get("category_filter")
     for row in dataset:
-        category = str(row.get("category", row.get("source", ""))).lower()
+        category = str(row.get("category") or row.get("source") or row.get("cot_type") or "").lower()
         if wanted and wanted not in category:
             continue
         problem = row.get("problem") or row.get("question") or row.get("input")
-        response = row.get("solution") or row.get("response") or row.get("output")
+        # s1K-1.1 splits the long CoT into a thinking trace + a short final write-up (its
+        # own "solution" field is just the bare final answer, e.g. "128" — no steps to select).
+        if row.get("deepseek_thinking_trajectory") and row.get("deepseek_attempt"):
+            response = (
+                f"<think>\n{row['deepseek_thinking_trajectory'].strip()}\n</think>\n\n"
+                f"{row['deepseek_attempt'].strip()}"
+            )
+        elif row.get("generated_response"):
+            # VoCuc/s1K-1.1-DeepSeek-R1-Distill-Qwen-32B: already "{reasoning}</think>\n\n{final
+            # write-up}", just missing the opening "<think>\n".
+            response = f"<think>\n{row['generated_response'].strip()}"
+        else:
+            response = row.get("solution") or row.get("response") or row.get("output")
         if problem and response:
             yield problem, response
 
@@ -118,7 +155,11 @@ def collect_records(tokenizer, config: dict, limit_scan: int) -> tuple[list[dict
         if counts["scanned"] > limit_scan or len(records) >= config["n_samples"]:
             break
 
-        record = build_record(tokenizer, problem, response, config["max_tokens"])
+        record = build_record(
+            tokenizer, problem, response, config["max_tokens"],
+            chat_template=config.get("chat_template", False),
+            enable_thinking=config.get("enable_thinking", True),
+        )
         if record is None:
             counts["skipped_long"] += 1
         # elif len(record["steps"]) < 2:  # nothing to select between
@@ -139,11 +180,37 @@ def collect_records(tokenizer, config: dict, limit_scan: int) -> tuple[list[dict
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/data-config.yaml")
+    parser.add_argument("--config", help="optional yaml base; CLI flags below override it")
+    parser.add_argument("--dataset-name")
+    parser.add_argument("--dataset-split")
+    parser.add_argument("--category-filter", help="substring match against category/source/cot_type")
+    parser.add_argument("--n-samples", type=int)
+    parser.add_argument("--seed", type=int)
+    parser.add_argument("--max-tokens", type=int)
+    parser.add_argument("--tokenizer", help="HF tokenizer id, e.g. Qwen/Qwen3-8B")
+    parser.add_argument("--output-path")
+    parser.add_argument("--chat-template", action=argparse.BooleanOptionalAction)
+    parser.add_argument("--enable-thinking", action=argparse.BooleanOptionalAction)
     parser.add_argument("--limit-scan", type=int, default=50000, help="max source rows to scan")
     args = parser.parse_args()
 
-    config = yaml.safe_load(Path(args.config).read_text())
+    config = yaml.safe_load(Path(args.config).read_text()) if args.config else {}
+    overrides = {
+        "dataset_name": args.dataset_name,
+        "dataset_split": args.dataset_split,
+        "category_filter": args.category_filter,
+        "n_samples": args.n_samples,
+        "seed": args.seed,
+        "max_tokens": args.max_tokens,
+        "tokenizer": args.tokenizer,
+        "output_path": args.output_path,
+        "chat_template": args.chat_template,
+        "enable_thinking": args.enable_thinking,
+    }
+    config.update({key: value for key, value in overrides.items() if value is not None})
+    config.setdefault("dataset_split", "train")
+    config.setdefault("seed", 42)
+
     tokenizer = AutoTokenizer.from_pretrained(config["tokenizer"])
     records, counts = collect_records(tokenizer, config, args.limit_scan)
 

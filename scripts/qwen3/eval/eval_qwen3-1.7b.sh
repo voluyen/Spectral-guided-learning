@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Phase 6: eval a Qwen3-1.7B LoRA adapter with vLLM, Pass@1. Default checkpoint is the spectral
+# run -- pass the vanilla checkpoint path + a tag to eval that one instead.
+#   ./scripts/qwen3/eval/eval_qwen3-1.7b.sh
+#   ./scripts/qwen3/eval/eval_qwen3-1.7b.sh checkpoints/vanilla-qwen3-1.7b vanilla-qwen3-1.7b
+set -euo pipefail
+
+GPUS=(0)
+export CUDA_VISIBLE_DEVICES=$(IFS=,; echo "${GPUS[*]}")
+export TOKENIZERS_PARALLELISM=false
+export HF_HUB_DISABLE_SYMLINKS_WARNING=1
+
+BASE_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+if [[ -z "${VIRTUAL_ENV:-}" ]]; then
+  if [[ -f "${BASE_PATH}/.venv-eval/bin/activate" ]]; then
+    source "${BASE_PATH}/.venv-eval/bin/activate"
+  elif [[ -f "${BASE_PATH}/.venv/bin/activate" ]]; then
+    source "${BASE_PATH}/.venv/bin/activate"
+  fi
+fi
+export PYTHONPATH="${BASE_PATH}/src"
+mkdir -p "${BASE_PATH}/logs"
+
+# model
+MODEL="${BASE_PATH}/checkpoints/spectral-qwen3-1.7b"
+BASE_MODEL="Qwen/Qwen3-1.7B"
+TAG="spectral-qwen3-1.7b"
+[[ -n "${1:-}" ]] && MODEL="$1"
+[[ -n "${2:-}" ]] && TAG="$2"
+# data
+BENCHMARKS="math500,aime24,aime25,amc12"
+# hp
+TEMPERATURE=0.6
+TOP_P=0.9
+N_SAMPLES=1
+MAX_TOKENS=30720
+MAX_MODEL_LEN=32768
+GPU_MEM_UTIL=0.9
+SEED=42
+CHAT_TEMPLATE=true
+ENABLE_THINKING=true
+LORA_R=16
+# runtime
+RESULTS_DIR="${BASE_PATH}/results"
+
+OPTS=""
+OPTS+=" --model ${MODEL}"
+OPTS+=" --tag ${TAG}"
+OPTS+=" --benchmarks ${BENCHMARKS}"
+OPTS+=" --temperature ${TEMPERATURE}"
+OPTS+=" --top-p ${TOP_P}"
+OPTS+=" --n-samples ${N_SAMPLES}"
+OPTS+=" --max-tokens ${MAX_TOKENS}"
+OPTS+=" --max-model-len ${MAX_MODEL_LEN}"
+OPTS+=" --gpu-memory-utilization ${GPU_MEM_UTIL}"
+OPTS+=" --seed ${SEED}"
+[[ "${CHAT_TEMPLATE}" == true ]] && OPTS+=" --chat-template" || OPTS+=" --no-chat-template"
+[[ "${ENABLE_THINKING}" == true ]] && OPTS+=" --enable-thinking" || OPTS+=" --no-enable-thinking"
+OPTS+=" --base-model ${BASE_MODEL}"
+OPTS+=" --lora-adapter"
+OPTS+=" --lora-r ${LORA_R}"
+OPTS+=" --results-dir ${RESULTS_DIR}"
+
+CMD="python ${BASE_PATH}/src/evaluate.py ${OPTS}"
+echo "${CMD}"
+${CMD} 2>&1 | tee "${BASE_PATH}/logs/eval-${TAG}.log"

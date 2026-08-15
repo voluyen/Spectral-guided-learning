@@ -22,7 +22,7 @@ from segmentation import segment_response_token_spans  # noqa: E402
 from spectral_utils import analyze_gradient_matrix  # noqa: E402
 from step_selection import build_loss_mask, select_steps_by_energy, selection_stats  # noqa: E402
 
-TOKENIZER_NAME = "Qwen/Qwen3-1.7B-Base"
+TOKENIZER_NAME = "Qwen/Qwen3-0.6B-Base"
 
 SAMPLES = [
     (

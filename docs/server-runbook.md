@@ -12,21 +12,27 @@ Yêu cầu: 1× GPU 40-48GB, disk ≥150GB trống, Python ≥3.10, có mạng r
 git clone https://github.com/voluyen/Spectral-guided-learning.git
 cd Spectral-guided-learning
 
-python -m venv .venv && source .venv/bin/activate
-nvidia-smi                                    # xem CUDA version + VRAM trống
-pip install torch --index-url https://download.pytorch.org/whl/cu121   # đổi cu121 cho khớp
-pip install -r requirements.txt
-pip install vllm                              # chỉ cần cho stage eval
-pip install flash-attn --no-build-isolation   # optional
+nvidia-smi   # xem "CUDA Version" góc trên phải trước — đó là trần driver hỗ trợ, không phải lựa chọn tự do
+./scripts/setup.sh        # venv (.venv) + torch + requirements.txt, dùng cho data/capture/masks/train
+./scripts/setup-eval.sh   # venv riêng (.venv-eval) + vllm, chỉ cần cho stage eval
 ```
+
+Cả 2 script mặc định `CUDA_TAG=cu124` (khớp driver của box H200 hiện dùng). Đổi cho máy khác:
+
+```bash
+CUDA_TAG=cu118 ./scripts/setup.sh        # vd: A100 driver cũ hơn
+CUDA_TAG=cu118 ./scripts/setup-eval.sh   # phải khớp CUDA_TAG của setup.sh
+```
+
+Sửa `INSTALL_FLASH_ATTN=true` đầu `scripts/setup.sh` để cài `flash-attn` (optional, build lâu).
 
 **Nên dùng venv riêng, đừng dùng env dùng chung của platform** (ví dụ `cloudspace` của Lightning
 Studio). Env dùng chung thường có `scipy`/`scikit-learn` build cho numpy 1.x, xung đột ABI với
 `pandas` build cho numpy 2.x — xem mục Troubleshooting.
 
-`flash-attn` build hỏng thì bỏ qua: configs mặc định `attn_implementation: sdpa`, chạy được, chỉ
-chậm hơn. Build được thì sửa `sdpa` → `flash_attention_2` trong `configs/capture-config.yaml`,
-`configs/train-vanilla.yaml`, `configs/train-spectral.yaml`.
+`flash-attn` build hỏng thì bỏ qua: scripts mặc định `sdpa`, chạy được, chỉ chậm hơn. Build được
+thì sửa `sdpa` → `flash_attention_2` trong `ATTN=` (`scripts/<family>/{sft,spectral}/`) hoặc
+`--attn-implementation` (`scripts/<family>/data/capture_<model>.sh`).
 
 ## 2. Biến môi trường
 
@@ -41,7 +47,7 @@ Thêm vào `~/.bashrc` để không mất khi reconnect SSH.
 
 ```bash
 python -c "import torch; print(torch.cuda.get_device_name(0))"
-python -m pytest -q                                    # 56 tests, ~2 giây
+python -m pytest -q                                    # pytest tự in số test đã chạy, ~2 giây
 PYTHONPATH=src python scripts/smoke_test_pipeline.py   # end-to-end với model tí hon, CPU
 ```
 
@@ -51,32 +57,50 @@ PYTHONPATH=src python scripts/smoke_test_pipeline.py   # end-to-end với model 
 
 ## 4. Chạy pipeline
 
-Dùng `tmux` — các stage chạy hàng giờ, mất SSH là mất luôn tiến trình.
+Repo giữ đúng 4 track model (Qwen3-1.7B, Qwen3-4B-Instruct-2507, Qwen3-8B, Qwen2.5-7B-Instruct),
+tổ chức theo family trước / phase sau (giống layout của distillm), mỗi script tự chứa toàn bộ
+tham số của đúng 1 run cụ thể (không yaml, không case/function rẽ nhánh trong 1 file):
+
+```
+scripts/qwen3/data/{data,capture,masks}_<model>.sh   # phase 2-4, 1 file/phase/model
+scripts/qwen3/sft/sft_<model>.sh                     # phase 5 vanilla (chỉ 1.7b/4b-instruct)
+scripts/qwen3/spectral/spectral_<model>.sh           # phase 5 spectral (cả 3 model qwen3)
+scripts/qwen3/eval/eval_<model>.sh                   # phase 6 (arg 1/2 = model path/tag để đè)
+scripts/qwen25/{data,spectral,eval}/..._qwen25-7b.sh # tương tự, chỉ 1 model
+```
+
+Dùng `tmux` — các stage chạy hàng giờ, mất SSH là mất luôn tiến trình. Ví dụ track qwen3-1.7b:
 
 ```bash
 tmux new -s spectral
-./scripts/run-pipeline.sh data       # phase 2: network-bound, CPU
-./scripts/run-pipeline.sh capture    # phase 3: ~2-4h GPU
-./scripts/run-pipeline.sh masks      # phase 4: vài giây, CPU
-./scripts/run-pipeline.sh smoke      # 8 samples, 1 epoch — thử VRAM thật
-./scripts/run-pipeline.sh train      # phase 5: ~10-20h GPU × 2 run
-./scripts/run-pipeline.sh eval       # phase 6: ~4-6h GPU × 2 model
+./scripts/qwen3/data/data_qwen3-1.7b.sh          # phase 2: network-bound, CPU
+./scripts/qwen3/data/capture_qwen3-1.7b.sh       # phase 3: ~2-4h GPU (--verify)
+./scripts/qwen3/data/masks_qwen3-1.7b.sh         # phase 4: vài giây, CPU
+./scripts/qwen3/sft/sft_qwen3-1.7b.sh            # phase 5 vanilla (~10-20h GPU)
+./scripts/qwen3/spectral/spectral_qwen3-1.7b.sh  # phase 5 spectral (~10-20h GPU)
+./scripts/qwen3/eval/eval_qwen3-1.7b.sh                                                    # phase 6, spectral (default)
+./scripts/qwen3/eval/eval_qwen3-1.7b.sh checkpoints/vanilla-qwen3-1.7b vanilla-qwen3-1.7b   # phase 6, vanilla
+python src/compare_results.py                    # in bảng so sánh
 ```
 
 Detach: `Ctrl-b d`. Attach lại: `tmux attach -t spectral`.
 
-Script tự activate `.venv` (nếu có) và tạo `logs/`. Mỗi stage ghi ra đĩa, stage sau đọc file đó
-nên dừng giữa chừng rồi chạy tiếp được — trừ `train`, xem mục Hạn chế.
+`qwen3-1.7b`/`qwen3-4b-instruct` có cả `sft/` (vanilla) lẫn `spectral/` (không có số công bố bên
+ngoài để so sánh, cần tự train baseline). `qwen3-8b`/`qwen25-7b` chỉ có `spectral/` (so với số
+vanilla đã công bố của P-ALIGN, không cần tự train vanilla).
 
-### Thứ tự và output từng stage
+Script tự activate `.venv` (nếu có) và tạo `logs/`. Mỗi stage ghi ra đĩa, stage sau đọc file đó
+nên dừng giữa chừng rồi chạy tiếp được — trừ train, xem mục Hạn chế.
+
+### Thứ tự và output từng stage (ví dụ track qwen3-1.7b — các track khác thay `qwen3-1.7b` bằng tên track)
 
 | Stage | Đọc | Ghi |
 |---|---|---|
-| `data` | AceReason-1.1-SFT (Hub) | `data/train-2k-segmented.jsonl` |
-| `capture` | jsonl trên | `data/spectral-strengths.parquet`, `data/spectral/{id}.npz` |
-| `masks` | jsonl + parquet | `data/train-vanilla.jsonl`, `data/train-spectral.jsonl`, `data/selection-stats.json` |
-| `train` | 2 file train | `checkpoints/{vanilla,spectral}/`, `logs/train-*.log` |
-| `eval` | 2 checkpoint | `results/raw/*.jsonl`, `results/*-summary.json`, `results/comparison-table.md` |
+| `data` | VoCuc/s1K-1.1-DeepSeek-R1-Distill-Qwen-32B (Hub) | `data/qwen3-1.7b/train-s1k-segmented.jsonl` |
+| `capture` | jsonl trên | `data/qwen3-1.7b/spectral-strengths.parquet`, `data/qwen3-1.7b/spectral/{id}.npz` |
+| `masks` | jsonl + parquet | `data/qwen3-1.7b/train-vanilla.jsonl`, `train-spectral.jsonl`, `selection-stats.json` |
+| `sft`/`spectral` | 1 file train | `checkpoints/{vanilla,spectral}-qwen3-1.7b/`, `logs/{sft,spectral}-*.log` |
+| `eval` | 1 checkpoint | `results/<tag>/raw/*.jsonl`, `results/<tag>/summary.json`, `results/comparison-table.md` |
 
 ---
 
@@ -100,23 +124,31 @@ spectral p=0.95            22.8%   23.3%          19.4%   20.3%       66.7%
 ```
 
 Nếu **cả hai** tỉ lệ đều ~0% thì `train-spectral.jsonl` trùng `train-vanilla.jsonl` — chạy 2 run
-là vô nghĩa. p=0.95 là giá trị của paper (không phải tham số tune), khá "bao trùm", nên đây là
-rủi ro thật chứ không phải lo xa.
+là vô nghĩa. `p=0.95` **không phải giá trị công bố của paper** (Eq. 8 không có số cụ thể nào cho
+`p` — xem `docs/system-architecture.md`), mà là lựa chọn kỹ thuật, khá "bao trùm", nên đây là
+rủi ro thật chứ không phải lo xa. Trước khi chạy `masks` chính thức, cân nhắc
+`python src/build_masks.py --data-path data/qwen3-1.7b/train-s1k-segmented.jsonl --sweep 0.7,0.8,0.9,0.95`
+(vài giây, không train lại, không ghi file dataset) để chọn `p` bằng số liệu drop-ratio thay vì đoán.
 
 ---
 
 ## 6. Hạn chế đã biết
 
-**Disk khi train.** `save_strategy=epoch` + `save_total_limit=6`, mà HF Trainer lưu cả optimizer
-state: mỗi checkpoint ≈ 3.4GB (model bf16) + ~14GB (Adam states) ≈ **17GB**. 6 epoch × 2 run ≈
-**200GB**. Không đủ chỗ thì thêm `save_only_model: true` vào 2 file `configs/train-*.yaml` (chỉ
-giữ weights, ~3.4GB/checkpoint) hoặc hạ `save_total_limit`.
+**Disk khi train.** Mặc định `SAVE_STRATEGY=epoch` + `EPOCHS=3` + `SAVE_TOTAL_LIMIT=6` (đặt ở
+đầu mỗi script trong `scripts/{qwen3,qwen25}/{sft,spectral}/` — `SAVE_TOTAL_LIMIT` không bao giờ
+kích hoạt vì 3 epoch < 6), mà HF Trainer lưu cả optimizer state: mỗi checkpoint ≈ 3.4GB (model
+bf16) + ~14GB (Adam states) ≈ **17GB**. 3 epoch × 2 run ≈ **102GB**. Không đủ chỗ thì hạ
+`SAVE_TOTAL_LIMIT`, hoặc `SAVE_STRATEGY=no` để chỉ giữ model final. Đổi `SAVE_STRATEGY=steps` +
+`SAVE_STEPS=N` để lưu dày hơn theo step (tốn thêm disk tương ứng).
 
-**Train không resume.** `train_sft.py` chưa truyền `resume_from_checkpoint`, crash giữa chừng là
-chạy lại từ đầu. Với run 15h thì nên bổ sung trước khi bắt đầu.
+**Train không resume, capture thì có.** `train_sft.py` chưa truyền `resume_from_checkpoint`, crash
+giữa chừng là chạy lại từ đầu — với run 15h thì nên bổ sung trước khi bắt đầu. `gradient_capture.py`
+ngược lại tự resume: mỗi sample ghi `.npz` riêng ngay khi xong, và lần chạy sau bỏ qua mọi id đã
+có `.npz` — crash giữa `capture` chỉ mất phần chưa ghi.
 
-**OOM ở seq 16k.** Thứ tự xử lý: đổi optimizer sang `adamw_bnb_8bit` (tiết kiệm ~10GB) → ZeRO-2
-CPU offload → hạ cutoff xuống 12k trong `configs/data-config.yaml` (phải chạy lại từ stage `data`).
+**OOM ở seq dài.** Thứ tự xử lý: đổi optimizer sang `adamw_bnb_8bit` (tiết kiệm ~10GB) → ZeRO-2
+CPU offload → hạ `MAX_TOKENS` trong `scripts/<family>/data/data_<model>.sh` (phải chạy lại từ
+stage `data`) hoặc `CHUNK_SIZE` trong `capture_<model>.sh` (không cần chạy lại `data`).
 
 ---
 
@@ -153,10 +185,11 @@ Thiếu `HF_TOKEN`, hoặc token chưa được duyệt quyền truy cập datas
 
 ### Muốn chấm điểm lại mà không generate lại
 
-Raw generations được lưu ở `results/raw/`:
+Raw generations được lưu ở `results/<tag>/raw/` (mỗi tag/track một thư mục riêng, không dùng
+chung một `results/raw/` phẳng nữa):
 
 ```bash
-python src/evaluate.py --rescore results/raw/spectral-math500.jsonl
+python src/evaluate.py --rescore results/spectral/raw/math500.jsonl
 ```
 
 Chạy trên CPU, không cần GPU.
@@ -171,5 +204,5 @@ Sửa code ở local → commit → push. Trên server:
 git pull && python -m pytest -q
 ```
 
-`data/`, `checkpoints/`, `results/raw/`, `logs/` đều nằm trong `.gitignore` — chỉ tồn tại trên
+`data/`, `checkpoints/`, `results/**/raw/`, `logs/` đều nằm trong `.gitignore` — chỉ tồn tại trên
 server, không đẩy về repo.
