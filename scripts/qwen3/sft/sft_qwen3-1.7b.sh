@@ -2,7 +2,7 @@
 # Phase 5: masked SFT -- VANILLA baseline, Qwen3-1.7B track (LoRA, DDP across both GPUs).
 set -euo pipefail
 
-GPUS=(0 1)
+GPUS=(2 3)
 export CUDA_VISIBLE_DEVICES=$(IFS=,; echo "${GPUS[*]}")
 export TOKENIZERS_PARALLELISM=false
 export HF_HUB_DISABLE_SYMLINKS_WARNING=1
@@ -35,7 +35,7 @@ LR=5.0e-5
 MIN_LR=1.0e-5
 WARMUP_RATIO=0.1
 BATCH_SIZE=1
-GRAD_ACC=16
+GRAD_ACC=4
 ATTN=sdpa
 LOG_INTERVAL=5
 SEED=42
