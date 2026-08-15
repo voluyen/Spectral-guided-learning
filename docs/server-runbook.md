@@ -12,13 +12,19 @@ Yêu cầu: 1× GPU 40-48GB, disk ≥150GB trống, Python ≥3.10, có mạng r
 git clone https://github.com/voluyen/Spectral-guided-learning.git
 cd Spectral-guided-learning
 
-python -m venv .venv && source .venv/bin/activate
-nvidia-smi                                    # xem CUDA version + VRAM trống
-pip install torch --index-url https://download.pytorch.org/whl/cu121   # đổi cu121 cho khớp
-pip install -r requirements.txt
-pip install vllm                              # chỉ cần cho stage eval
-pip install flash-attn --no-build-isolation   # optional
+nvidia-smi   # xem "CUDA Version" góc trên phải trước — đó là trần driver hỗ trợ, không phải lựa chọn tự do
+./scripts/setup.sh        # venv (.venv) + torch + requirements.txt, dùng cho data/capture/masks/train
+./scripts/setup-eval.sh   # venv riêng (.venv-eval) + vllm, chỉ cần cho stage eval
 ```
+
+Cả 2 script mặc định `CUDA_TAG=cu124` (khớp driver của box H200 hiện dùng). Đổi cho máy khác:
+
+```bash
+CUDA_TAG=cu118 ./scripts/setup.sh        # vd: A100 driver cũ hơn
+CUDA_TAG=cu118 ./scripts/setup-eval.sh   # phải khớp CUDA_TAG của setup.sh
+```
+
+Sửa `INSTALL_FLASH_ATTN=true` đầu `scripts/setup.sh` để cài `flash-attn` (optional, build lâu).
 
 **Nên dùng venv riêng, đừng dùng env dùng chung của platform** (ví dụ `cloudspace` của Lightning
 Studio). Env dùng chung thường có `scipy`/`scikit-learn` build cho numpy 1.x, xung đột ABI với

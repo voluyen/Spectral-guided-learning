@@ -9,11 +9,11 @@ set -euo pipefail
 BASE_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${BASE_PATH}"
 
-# Must match setup.sh's CUDA_TAG -- capped by `nvidia-smi`'s driver, not a free choice. cu118
-# default is for this box's A100s; H100/H200 boxes usually have a newer driver and should
-# override, e.g. CUDA_TAG=cu124 ./scripts/setup-eval.sh (torch==2.6.0 below has cu118/cu124/cu126
-# wheels -- pick whichever matches the driver).
-CUDA_TAG="${CUDA_TAG:-cu118}"
+# Must match setup.sh's CUDA_TAG -- capped by `nvidia-smi`'s driver, not a free choice. cu124
+# default is for the H200 target box; override for other hardware, e.g.
+# CUDA_TAG=cu118 ./scripts/setup-eval.sh (torch==2.6.0 below has cu118/cu124/cu126 wheels --
+# pick whichever matches the driver).
+CUDA_TAG="${CUDA_TAG:-cu124}"
 VENV_DIR=.venv-eval
 VLLM_VERSION=0.8.3       # newest vllm whose pinned torch (2.6.0) still has wheels for the CUDA
                          # tags above, and whose transformers floor isn't broken by transformers v5
@@ -23,9 +23,10 @@ command -v uv >/dev/null || { echo "ERROR: uv not found (needed for a Python 3.1
 VENV_PY="${BASE_PATH}/${VENV_DIR}/bin/python"
 
 # torch/torchvision/torchaudio version strings carry no CUDA marker, so installing vllm alone
-# silently pulls cu124+ builds for torchvision/torchaudio even with torch pinned to cu118 —
-# force all three from the cu118 index together, --reinstall so a mismatched prior install
-# (same version string, wrong CUDA build) actually gets replaced instead of "already satisfied".
+# can silently pull a different CUDA build for torchvision/torchaudio than the pinned torch —
+# force all three from the same CUDA_TAG index together, --reinstall so a mismatched prior
+# install (same version string, wrong CUDA build) actually gets replaced instead of "already
+# satisfied".
 uv pip install --python "${VENV_PY}" --reinstall \
   "torch==2.6.0" "torchvision==0.21.0" "torchaudio==2.6.0" \
   --index-url "https://download.pytorch.org/whl/${CUDA_TAG}"
