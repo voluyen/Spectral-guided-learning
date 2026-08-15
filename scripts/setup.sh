@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Install the stack on a fresh GPU box: venv + CUDA 12 torch + requirements.txt.
+# Install the stack on a fresh GPU box: venv + torch (matching CUDA build) + requirements.txt.
 set -euo pipefail
 
 BASE_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${BASE_PATH}"
 
-CUDA_TAG=cu118       
+# Check `nvidia-smi`'s "CUDA Version" (top-right) first -- that's the driver's ceiling, not a
+# free choice. cu118 default is for this box's A100s; H100/H200 boxes usually have a newer
+# driver and should override, e.g. CUDA_TAG=cu124 ./scripts/setup.sh
+CUDA_TAG="${CUDA_TAG:-cu118}"
 VENV_DIR=.venv
 INSTALL_FLASH_ATTN=false
 

@@ -9,10 +9,14 @@ set -euo pipefail
 BASE_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${BASE_PATH}"
 
-CUDA_TAG=cu118           # must match setup.sh's CUDA_TAG — capped by `nvidia-smi`'s driver, not a free choice
+# Must match setup.sh's CUDA_TAG -- capped by `nvidia-smi`'s driver, not a free choice. cu118
+# default is for this box's A100s; H100/H200 boxes usually have a newer driver and should
+# override, e.g. CUDA_TAG=cu124 ./scripts/setup-eval.sh (torch==2.6.0 below has cu118/cu124/cu126
+# wheels -- pick whichever matches the driver).
+CUDA_TAG="${CUDA_TAG:-cu118}"
 VENV_DIR=.venv-eval
-VLLM_VERSION=0.8.3       # newest vllm whose pinned torch (2.6.0) still has a cu118 wheel, and
-                         # whose transformers floor isn't broken by installing transformers v5
+VLLM_VERSION=0.8.3       # newest vllm whose pinned torch (2.6.0) still has wheels for the CUDA
+                         # tags above, and whose transformers floor isn't broken by transformers v5
 
 command -v uv >/dev/null || { echo "ERROR: uv not found (needed for a Python 3.12 venv here)" >&2; exit 1; }
 [[ -d "${VENV_DIR}" ]] || uv venv --python 3.12 "${VENV_DIR}"
