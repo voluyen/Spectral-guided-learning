@@ -5,16 +5,15 @@ set -euo pipefail
 
 BASE_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "${BASE_PATH}"
-if [[ -z "${VIRTUAL_ENV:-}" && -f .venv/bin/activate ]]; then
+if [[ -z "${VIRTUAL_ENV:-}" ]]; then
+  [[ -f .venv/bin/activate ]] || ./scripts/setup.sh
   source .venv/bin/activate
 fi
 export PYTHONPATH="${BASE_PATH}/src"
 mkdir -p logs
 
-# data
 DATA_PATH="data/qwen3-8b/train-s1k-segmented.jsonl"
 STRENGTHS_PATH="data/qwen3-8b/spectral-strengths.parquet"
-# hp
 ENERGY_THRESHOLD_P=0.95
 
 OPTS=""

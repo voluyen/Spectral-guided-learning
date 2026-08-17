@@ -1,18 +1,15 @@
 # Server (GPU): install torch with matching CUDA first, then this file.
 # Local (CPU dev): pip install --index-url https://download.pytorch.org/whl/cpu torch
 torch>=2.6
-transformers>=4.56,<5   # Qwen3 support; `dtype=` arg (replaces torch_dtype). <5: v5 dropped
-                        # TrainingArguments.warmup_ratio (only warmup_steps remains) — breaks train_sft.py
+transformers>=4.56,<5   # Qwen3 support; <5 avoids v5's TrainingArguments.warmup_ratio removal
 peft>=0.13              # optional LoRA fine-tuning path in train_sft.py (--use-lora)
 datasets>=2.20
 accelerate>=1.0
-numpy>=2.0              # pandas wheels are built against numpy 2; numpy 1.x raises a dtype ABI error
+numpy>=2.0,<2.2         # <2.2 required by vllm's numba dep (see setup.sh)
 pandas>=2.2
 pyarrow
 pyyaml
-tqdm                    # progress bars (already a transformers dep; pinned here as a direct one)
+tqdm
 math-verify
 pytest
-# GPU-server only (skip on local CPU machine):
-# flash-attn        # optional, SDPA fallback supported via config
-# vllm>=0.8         # eval generation
+# GPU-server only: flash-attn and vllm are installed by scripts/setup.sh directly, not from here.

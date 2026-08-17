@@ -13,15 +13,13 @@ git clone https://github.com/voluyen/Spectral-guided-learning.git
 cd Spectral-guided-learning
 
 nvidia-smi   # xem "CUDA Version" góc trên phải trước — đó là trần driver hỗ trợ, không phải lựa chọn tự do
-./scripts/setup.sh        # venv (.venv) + torch + requirements.txt, dùng cho data/capture/masks/train
-./scripts/setup-eval.sh   # venv riêng (.venv-eval) + vllm, chỉ cần cho stage eval
+./scripts/setup.sh   # 1 venv (.venv) duy nhất: torch + vllm (pinned) + requirements.txt, dùng cho mọi stage
 ```
 
-Cả 2 script mặc định `CUDA_TAG=cu124` (khớp driver của box H200 hiện dùng). Đổi cho máy khác:
+Script mặc định `CUDA_TAG=cu124` (khớp driver của box H200 hiện dùng). Đổi cho máy khác:
 
 ```bash
-CUDA_TAG=cu118 ./scripts/setup.sh        # vd: A100 driver cũ hơn
-CUDA_TAG=cu118 ./scripts/setup-eval.sh   # phải khớp CUDA_TAG của setup.sh
+CUDA_TAG=cu118 ./scripts/setup.sh   # vd: A100 driver cũ hơn
 ```
 
 Sửa `INSTALL_FLASH_ATTN=true` đầu `scripts/setup.sh` để cài `flash-attn` (optional, build lâu).

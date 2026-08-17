@@ -2,7 +2,7 @@
 # Phase 5: masked SFT -- SPECTRAL, Qwen3-4B-Instruct-2507 track (LoRA).
 set -euo pipefail
 
-GPUS=(0)
+GPUS=(2 3)
 export CUDA_VISIBLE_DEVICES=$(IFS=,; echo "${GPUS[*]}")
 export TOKENIZERS_PARALLELISM=false
 export HF_HUB_DISABLE_SYMLINKS_WARNING=1
@@ -19,17 +19,16 @@ DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE \
                   --master_port $MASTER_PORT"
 
 BASE_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-if [[ -z "${VIRTUAL_ENV:-}" && -f "${BASE_PATH}/.venv/bin/activate" ]]; then
+if [[ -z "${VIRTUAL_ENV:-}" ]]; then
+  [[ -f "${BASE_PATH}/.venv/bin/activate" ]] || "${BASE_PATH}/scripts/setup.sh"
   source "${BASE_PATH}/.venv/bin/activate"
 fi
 export PYTHONPATH="${BASE_PATH}/src"
 mkdir -p "${BASE_PATH}/logs"
 
-# model + data
 MODEL_NAME="Qwen/Qwen3-4B-Instruct-2507"
 DATA_PATH="${BASE_PATH}/data/qwen3-4b-instruct/train-spectral.jsonl"
 OUTPUT_DIR="${BASE_PATH}/checkpoints/spectral-qwen3-4b-instruct"
-# hp
 EPOCHS=3
 LR=5.0e-5
 MIN_LR=1.0e-5
@@ -39,11 +38,9 @@ GRAD_ACC=32
 ATTN=sdpa
 LOG_INTERVAL=5
 SEED=42
-# runtime
 SAVE_STRATEGY=epoch
 SAVE_STEPS=500
 SAVE_TOTAL_LIMIT=6
-# LoRA
 LORA_R=16
 LORA_ALPHA=32
 LORA_DROPOUT=0.05

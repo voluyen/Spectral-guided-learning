@@ -4,19 +4,17 @@ set -euo pipefail
 
 BASE_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "${BASE_PATH}"
-if [[ -z "${VIRTUAL_ENV:-}" && -f .venv/bin/activate ]]; then
+if [[ -z "${VIRTUAL_ENV:-}" ]]; then
+  [[ -f .venv/bin/activate ]] || ./scripts/setup.sh
   source .venv/bin/activate
 fi
 export PYTHONPATH="${BASE_PATH}/src"
 mkdir -p logs
 
-# model
 MODEL_NAME="Qwen/Qwen3-8B"
-# data
 DATA_PATH="data/qwen3-8b/train-s1k-segmented.jsonl"
 OUTPUT_DIR="data/qwen3-8b/spectral"
 STRENGTHS_PATH="data/qwen3-8b/spectral-strengths.parquet"
-# hp
 ENERGY_CUTOFF=0.95
 CHUNK_SIZE=1024
 

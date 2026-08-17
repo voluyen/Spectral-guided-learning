@@ -4,15 +4,14 @@ set -euo pipefail
 
 BASE_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "${BASE_PATH}"
-if [[ -z "${VIRTUAL_ENV:-}" && -f .venv/bin/activate ]]; then
+if [[ -z "${VIRTUAL_ENV:-}" ]]; then
+  [[ -f .venv/bin/activate ]] || ./scripts/setup.sh
   source .venv/bin/activate
 fi
 export PYTHONPATH="${BASE_PATH}/src"
 mkdir -p logs "data/qwen3-8b"
 
-# model
 MODEL_NAME="Qwen/Qwen3-8B"
-# data
 DATASET_NAME="VoCuc/s1K-1.1-DeepSeek-R1-Distill-Qwen-32B"
 OUTPUT_PATH="data/qwen3-8b/train-s1k-segmented.jsonl"
 N_SAMPLES=1050

@@ -67,6 +67,7 @@ def generate(model_path: str, records: list[dict], config: dict) -> list[list[di
             dtype="bfloat16",
             enable_lora=True,
             max_lora_rank=config.get("lora_r", 16),
+            enforce_eager=config.get("enforce_eager", True),
         )
         lora_request = LoRARequest("adapter", 1, model_path)
     else:
@@ -75,6 +76,7 @@ def generate(model_path: str, records: list[dict], config: dict) -> list[list[di
             max_model_len=config["max_model_len"],
             gpu_memory_utilization=config.get("gpu_memory_utilization", 0.9),
             dtype="bfloat16",
+            enforce_eager=config.get("enforce_eager", True),
         )
         lora_request = None
 
@@ -136,6 +138,7 @@ def main() -> None:
     parser.add_argument("--max-tokens", type=int)
     parser.add_argument("--max-model-len", type=int)
     parser.add_argument("--gpu-memory-utilization", type=float)
+    parser.add_argument("--enforce-eager", action=argparse.BooleanOptionalAction)
     parser.add_argument("--seed", type=int)
     parser.add_argument("--results-dir", help="root dir; each run writes under <results-dir>/<tag>/")
     # chat template (instruct/hybrid-thinking models) + LoRA adapter (--no-lora-merge checkpoints)
@@ -158,6 +161,7 @@ def main() -> None:
         "max_tokens": args.max_tokens,
         "max_model_len": args.max_model_len,
         "gpu_memory_utilization": args.gpu_memory_utilization,
+        "enforce_eager": args.enforce_eager,
         "seed": args.seed,
         "results_dir": args.results_dir,
         "chat_template": args.chat_template,
