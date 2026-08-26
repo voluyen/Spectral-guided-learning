@@ -14,8 +14,11 @@ __pycache__/
 # Local agent tooling (ClaudeKit) — not part of the reproduction code
 .claude/
 
-# Reference clone of github.com/NEUIR/P-ALIGN (external code, not part of this repo)
+# Reference clones (external code, not part of this repo) -- each has its own .git, so
+# tracking them here would create a broken gitlink instead of their actual files.
 P-ALIGN/
+Pru-CoT/
+ThoughtFold/
 
 # transient run log at repo root (logs/ dir is already ignored)
 logs-data-prep.txt

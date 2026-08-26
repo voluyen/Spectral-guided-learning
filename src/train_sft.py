@@ -24,9 +24,15 @@ from masked_loss import masked_cross_entropy
 class MaskedSFTDataset(Dataset):
     """JSONL records of {input_ids, loss_mask} produced by build_masks.py."""
 
-    def __init__(self, path: str):
+    def __init__(self, path: str, max_seq_len: int | None = None):
         with open(path) as handle:
             self.records = [json.loads(line) for line in handle]
+        if max_seq_len is not None:
+            before = len(self.records)
+            self.records = [r for r in self.records if len(r["input_ids"]) <= max_seq_len]
+            dropped = before - len(self.records)
+            if dropped:
+                print(f"--max-seq-len {max_seq_len}: dropped {dropped}/{before} samples (too long to fit in GPU memory at batch size 1)")
 
     def __len__(self) -> int:
         return len(self.records)
@@ -89,6 +95,7 @@ def build_training_arguments(config: dict) -> TrainingArguments:
         report_to=[],
         seed=config.get("seed", 42),
         remove_unused_columns=False,
+        deepspeed=config.get("deepspeed_config"),
     )
 
 
@@ -111,6 +118,20 @@ def main() -> None:
     parser.add_argument("--attn-implementation")
     parser.add_argument("--seed", type=int)
     parser.add_argument("--logging-steps", type=int)
+    parser.add_argument(
+        "--deepspeed-config",
+        help="path to a DeepSpeed json config (e.g. configs/deepspeed/ds_config_zero2_offload.json); "
+        "batch size/grad accum/bf16 fields there are \"auto\", filled in from the flags above. "
+        "ZeRO-2 + optimizer CPU offload for long-sequence runs that OOM at --per-device-batch-size 1.",
+    )
+    parser.add_argument(
+        "--max-seq-len", type=int,
+        help="drop samples with more than this many input_ids before training. Optimizer-state "
+        "offload (--deepspeed-config) doesn't reduce per-sample activation memory -- a single very "
+        "long sequence at --per-device-batch-size 1 can still OOM regardless. Empirically measured "
+        "on a 40GB GPU (Qwen3-1.7B, this LoRA config, gradient checkpointing on): ~31GB peak at "
+        "12k tokens, ~40GB (no margin) at 16k, OOM at 20k -- pick a value with headroom for your GPU.",
+    )
     # checkpointing
     parser.add_argument("--save-strategy", choices=["epoch", "steps", "no"])
     parser.add_argument("--save-steps", type=int, help="interval when --save-strategy=steps")
@@ -144,6 +165,8 @@ def main() -> None:
         "attn_implementation": args.attn_implementation,
         "seed": args.seed,
         "logging_steps": args.logging_steps,
+        "deepspeed_config": args.deepspeed_config,
+        "max_seq_len": args.max_seq_len,
         "save_strategy": args.save_strategy,
         "save_steps": args.save_steps,
         "save_total_limit": args.save_total_limit,
@@ -161,7 +184,7 @@ def main() -> None:
         parser.error(f"missing required settings (pass via --config or CLI flags): {missing}")
 
     tokenizer = AutoTokenizer.from_pretrained(config["model_name"])
-    dataset = MaskedSFTDataset(config["data_path"])
+    dataset = MaskedSFTDataset(config["data_path"], max_seq_len=config.get("max_seq_len"))
 
     if args.smoke:
         dataset.records = dataset.records[:8]

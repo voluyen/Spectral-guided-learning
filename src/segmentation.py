@@ -43,6 +43,23 @@ def record_step_spans(record: dict) -> list[tuple[int, int]]:
     return [(step["token_start"], step["token_end"]) for step in record["steps"]]
 
 
+def solution_step_start(step_texts: list[str]) -> int | None:
+    """Index of the first step belonging to the final solution, for methods (Pru-CoT) that
+    treat the chain-of-thought T = (s1..sS) and the solution y as separate: y is never one of
+    T's steps. This project's actual training source, VoCuc/s1K-1.1-DeepSeek-R1-Distill-Qwen-32B,
+    guarantees this split: data_prep.py builds every response as
+    "<think>\n{trajectory}\n</think>\n\n{attempt}" (1000/1000 rows have both source columns).
+    The tag rarely lands on one of split_into_step_texts' sentence-boundary cuts, so the step
+    whose own text contains "</think>" -- and every step after it -- counts as solution
+    content, rather than splitting mid-tag. Returns None when no "</think>" is present at all
+    (a data source without this structure), so callers can fall back to the whole response.
+    """
+    for index, text in enumerate(step_texts):
+        if "</think>" in text:
+            return index
+    return None
+
+
 def encode_with_offsets(tokenizer, text: str) -> tuple[list[int], list[int]]:
     """Tokenize `text` once, returning its ids and each token's starting character index.
 

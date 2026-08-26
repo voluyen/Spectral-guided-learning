@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 5: masked SFT -- SPECTRAL, Qwen3-1.7B track (LoRA, DDP across both GPUs).
+# Phase 5: masked SFT -- PRU-COT baseline, Qwen3-8B track (LoRA, same setup as spectral).
 set -euo pipefail
 
 GPUS=(2 3)
@@ -26,15 +26,15 @@ fi
 export PYTHONPATH="${BASE_PATH}/src"
 mkdir -p "${BASE_PATH}/logs"
 
-MODEL_NAME="Qwen/Qwen3-1.7B"
-DATA_PATH="${BASE_PATH}/data/qwen3-1.7b/train-spectral.jsonl"
-OUTPUT_DIR="${BASE_PATH}/checkpoints/spectral-qwen3-1.7b"
+MODEL_NAME="Qwen/Qwen3-8B"
+DATA_PATH="${BASE_PATH}/data/qwen3-8b/train-prucot.jsonl"
+OUTPUT_DIR="${BASE_PATH}/checkpoints/prucot-qwen3-8b"
 EPOCHS=3
 LR=5.0e-5
 MIN_LR=1.0e-5
 WARMUP_RATIO=0.1
 BATCH_SIZE=1
-GRAD_ACC=4
+GRAD_ACC=32
 ATTN=sdpa
 LOG_INTERVAL=5
 SEED=42
@@ -45,18 +45,6 @@ LORA_R=16
 LORA_ALPHA=32
 LORA_DROPOUT=0.05
 LORA_TARGET_MODULES="q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
-# ZeRO-2 + optimizer CPU offload: BATCH_SIZE=1 still OOMs on a 40GB GPU for the longest
-# sequences in this track's data (confirmed empirically) -- offload trades some throughput
-# for headroom instead of dropping samples or shrinking the cutoff.
-DS_CONFIG="${BASE_PATH}/configs/deepspeed/ds_config_zero2_offload.json"
-# Matches the Spectral paper's own "Cutoff Length" (Table 3): 32,768 tokens. This track's
-# data (data_prep.py --max-tokens 32768) tops out at ~27k tokens, so this is a no-op filter
-# here -- it exists to cap future/larger data at the paper's own limit rather than an
-# A100-specific ceiling. On a 40GB GPU, single-sequence activation memory alone OOMs above
-# ~16-20k tokens even with ZeRO-2 offload (measured directly: this model/LoRA config,
-# gradient checkpointing on) -- lower this back down if running on similarly VRAM-limited
-# hardware instead of a larger-memory server.
-MAX_SEQ_LEN=32768
 
 OPTS=""
 OPTS+=" --model-name ${MODEL_NAME}"
@@ -80,9 +68,7 @@ OPTS+=" --lora-alpha ${LORA_ALPHA}"
 OPTS+=" --lora-dropout ${LORA_DROPOUT}"
 OPTS+=" --lora-target-modules ${LORA_TARGET_MODULES}"
 OPTS+=" --no-lora-merge"
-OPTS+=" --deepspeed-config ${DS_CONFIG}"
-OPTS+=" --max-seq-len ${MAX_SEQ_LEN}"
 
 CMD="torchrun ${DISTRIBUTED_ARGS} ${BASE_PATH}/src/train_sft.py ${OPTS}"
 echo "${CMD}"
-${CMD} 2>&1 | tee "${BASE_PATH}/logs/spectral-qwen3-1.7b.log"
+${CMD} 2>&1 | tee "${BASE_PATH}/logs/prucot-qwen3-8b.log"

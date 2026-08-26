@@ -34,7 +34,7 @@ LR=5.0e-5
 MIN_LR=1.0e-5
 WARMUP_RATIO=0.1
 BATCH_SIZE=1
-GRAD_ACC=32
+GRAD_ACC=4
 ATTN=sdpa
 LOG_INTERVAL=5
 SEED=42
@@ -45,6 +45,10 @@ LORA_R=16
 LORA_ALPHA=32
 LORA_DROPOUT=0.05
 LORA_TARGET_MODULES="q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+# ZeRO-2 + optimizer CPU offload: headroom for long sequences (see docs/server-runbook.md §6).
+DS_CONFIG="${BASE_PATH}/configs/deepspeed/ds_config_zero2_offload.json"
+# Matches the Spectral paper's own "Cutoff Length" (Table 3): 32,768 tokens.
+MAX_SEQ_LEN=32768
 
 OPTS=""
 OPTS+=" --model-name ${MODEL_NAME}"
@@ -68,6 +72,8 @@ OPTS+=" --lora-alpha ${LORA_ALPHA}"
 OPTS+=" --lora-dropout ${LORA_DROPOUT}"
 OPTS+=" --lora-target-modules ${LORA_TARGET_MODULES}"
 OPTS+=" --no-lora-merge"
+OPTS+=" --deepspeed-config ${DS_CONFIG}"
+OPTS+=" --max-seq-len ${MAX_SEQ_LEN}"
 
 CMD="torchrun ${DISTRIBUTED_ARGS} ${BASE_PATH}/src/train_sft.py ${OPTS}"
 echo "${CMD}"
