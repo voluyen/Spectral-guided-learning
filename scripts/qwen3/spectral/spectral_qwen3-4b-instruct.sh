@@ -2,7 +2,7 @@
 # Phase 5: masked SFT -- SPECTRAL, Qwen3-4B-Instruct-2507 track (LoRA).
 set -euo pipefail
 
-GPUS=(2 3)
+GPUS=(4 5 6 7)
 export CUDA_VISIBLE_DEVICES=$(IFS=,; echo "${GPUS[*]}")
 export TOKENIZERS_PARALLELISM=false
 export HF_HUB_DISABLE_SYMLINKS_WARNING=1
@@ -34,7 +34,7 @@ LR=5.0e-5
 MIN_LR=1.0e-5
 WARMUP_RATIO=0.1
 BATCH_SIZE=1
-GRAD_ACC=4
+GRAD_ACC=8
 ATTN=sdpa
 LOG_INTERVAL=5
 SEED=42
@@ -45,9 +45,9 @@ LORA_R=16
 LORA_ALPHA=32
 LORA_DROPOUT=0.05
 LORA_TARGET_MODULES="q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
-# ZeRO-2 + optimizer CPU offload: headroom for long sequences (see docs/server-runbook.md §6).
+# ZeRO-2 offload for long-sequence headroom on VRAM-limited GPUs.
 DS_CONFIG="${BASE_PATH}/configs/deepspeed/ds_config_zero2_offload.json"
-# Matches the Spectral paper's own "Cutoff Length" (Table 3): 32,768 tokens.
+# Spectral paper's own Cutoff Length (Table 3).
 MAX_SEQ_LEN=32768
 
 OPTS=""

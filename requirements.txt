@@ -6,7 +6,7 @@ peft>=0.13              # optional LoRA fine-tuning path in train_sft.py (--use-
 deepspeed>=0.15         # optional --deepspeed-config path in train_sft.py (ZeRO-2 + CPU offload)
 datasets>=2.20
 accelerate>=1.0
-numpy>=2.0,<2.2         # <2.2 required by vllm's numba dep (see setup.sh)
+numpy>=2.0,<2.5         # <2.5 required by vllm's pinned numba==0.65.0 dep (see setup.sh)
 pandas>=2.2
 pyarrow
 pyyaml

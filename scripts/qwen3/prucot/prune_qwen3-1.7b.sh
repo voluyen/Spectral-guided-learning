@@ -2,7 +2,7 @@
 # Phase 4 (Pru-CoT baseline): LLM-guided pruning for the Qwen3-1.7B track (agent: Qwen2.5-1.5B-Instruct).
 set -euo pipefail
 
-GPUS=(2 3)
+GPUS=(4 5 6 7)
 export CUDA_VISIBLE_DEVICES=$(IFS=,; echo "${GPUS[*]}")
 export TOKENIZERS_PARALLELISM=false
 export HF_HUB_DISABLE_SYMLINKS_WARNING=1
@@ -23,7 +23,7 @@ OUTPUT_PATH="${BASE_PATH}/data/qwen3-1.7b/train-prucot.jsonl"
 CANDIDATE_THRESHOLD=0.5
 MEDIAN_GATE_THRESHOLD=1.0
 MAX_MODEL_LEN=40960
-TENSOR_PARALLEL_SIZE=2
+TENSOR_PARALLEL_SIZE=4
 
 OPTS=""
 OPTS+=" --data-path ${DATA_PATH}"
