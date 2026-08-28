@@ -17,7 +17,6 @@ fine-tuning); --num-shards/--shard-index split the corpus the same way gradient_
 """
 
 import argparse
-import json
 import time
 from pathlib import Path
 
@@ -27,6 +26,7 @@ import torch
 import yaml
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from gradient_capture import load_records
 from segmentation import record_step_spans, solution_step_start
 
 IGNORE_INDEX = -100
@@ -122,12 +122,6 @@ def optimize_sample_weights(
         weight_history.append(weights.detach().clone().cpu())
 
     return best_epoch_weights(loss_history, weight_history).tolist()
-
-
-def load_records(path: str, limit: int | None) -> list[dict]:
-    with open(path) as handle:
-        records = [json.loads(line) for line in handle]
-    return records[:limit] if limit else records
 
 
 def main() -> None:

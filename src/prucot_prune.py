@@ -225,7 +225,9 @@ def main() -> None:
         records = [json.loads(line) for line in handle]
     weights_frame = pd.read_parquet(config["weights_path"])
     weights_by_id = {int(row.id): list(row.step_weights) for row in weights_frame.itertuples()}
-    records = [record for record in records if weights_by_id.get(record["id"])]
+    # `in`, not a truthy check on the list -- an empty step_weights (no CoT steps to score) is a
+    # legitimate result that must still flow into kept_as_is below, not be dropped here.
+    records = [record for record in records if record["id"] in weights_by_id]
 
     kept_as_is, queue = [], []
     for record in records:
@@ -295,21 +297,26 @@ def main() -> None:
                 real for real, virtual in item["virtual_ids"].items() if virtual in pruned_set
             ]
 
-    output_records, stats = [], []
-    for record in kept_as_is:
-        step_spans = record_step_spans(record)
-        stats.append(selection_stats(step_spans, list(range(len(step_spans)))))
-        output_records.append(emit_prucot_record(record, prune_indices=set()))
+    # Uniform (record, prune_indices, n_scored, tokenizer, step_texts) shape for both branches --
+    # kept_as_is records use the emit_prucot_record()/selection_stats() no-op defaults (empty
+    # prune_indices), so both cases go through the same emit loop below.
+    emit_items = [(record, set(), 0, None, None) for record in kept_as_is] + [
+        (
+            item["record"],
+            set(real_prune_by_id.get(item["record"]["id"], [])),
+            item["n_scored"],
+            student_tokenizer,
+            item["step_texts"],
+        )
+        for item in queue
+    ]
 
-    for item in queue:
-        record = item["record"]
+    output_records, stats = [], []
+    for record, prune_indices, n_scored, tokenizer, step_texts in emit_items:
         step_spans = record_step_spans(record)
-        prune_indices = set(real_prune_by_id.get(record["id"], []))
         selected = [index for index in range(len(step_spans)) if index not in prune_indices]
         stats.append(selection_stats(step_spans, selected))
-        output_records.append(
-            emit_prucot_record(record, prune_indices, item["n_scored"], student_tokenizer, item["step_texts"])
-        )
+        output_records.append(emit_prucot_record(record, prune_indices, n_scored, tokenizer, step_texts))
 
     output_records.sort(key=lambda row: row["id"])
     output_path = Path(config["output_path"])

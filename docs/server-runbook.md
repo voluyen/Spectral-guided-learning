@@ -2,7 +2,8 @@
 
 Hướng dẫn chạy pipeline trên GPU server. Máy local (không GPU) chỉ để sửa code và chạy test.
 
-Yêu cầu: 1× GPU 40-48GB, disk ≥150GB trống, Python ≥3.10. Có mạng ra HuggingFace Hub để `pip`/`uv`
+Yêu cầu: 1× GPU 40-48GB, disk ≥150GB trống, Python 3.12 (`pyproject.toml` ghim `>=3.12,<3.13`; `uv sync`
+tự cài Python 3.12 nếu máy chưa có, miễn có mạng). Có mạng ra HuggingFace Hub để `pip`/`uv`
 cài package và tải model/dataset trực tiếp; server không mạng thì xem `download.txt`
 (model + dataset cần tải sẵn) và set `LOCAL_MODELS_ROOT`/`LOCAL_DATA_ROOT`/`BENCH_DATA_ROOT` để mọi
 script đọc từ local thay vì Hub.
