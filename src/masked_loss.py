@@ -2,14 +2,11 @@
 
     L = -(1/Z) * sum_t M_t * log P(y_t | y_<t),   Z = sum_t M_t
 
-Z is a token count over the whole optimizer step, not a per-sequence average: every
-supervised token carries the same weight regardless of how densely its sequence is
-supervised. Under gradient accumulation the caller passes the count for all microbatches
-of the step (see MaskedSFTTrainer) so the sum and the divisor cover the same tokens.
-
-Masked-out positions still participate in the forward pass (full context is preserved);
-they simply contribute no gradient. With an all-ones mask over the response this reduces
-exactly to standard SFT cross-entropy, which the unit tests assert.
+Z counts supervised tokens over the whole optimizer step, not per sequence, so every
+token gets equal weight regardless of local mask density; under gradient accumulation the
+caller passes the full-step count (see MaskedSFTTrainer). Masked positions still run through
+the forward pass but contribute no gradient; an all-ones mask reduces this to standard SFT
+cross-entropy (asserted by the unit tests).
 """
 
 import torch

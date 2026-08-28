@@ -3,7 +3,7 @@ exactly predictable; the real-tokenizer round-trip is checked by data_prep.py it
 
 import re
 
-from segmentation import segment_response_token_spans, split_into_step_texts
+from segmentation import segment_response_token_spans, solution_step_start, split_into_step_texts
 
 
 class CharTokenizer:
@@ -111,6 +111,28 @@ def test_ids_are_the_canonical_tokenization_not_a_piecewise_concat():
     )
     assert response_ids == canonical
     assert len(piecewise) > len(canonical)  # the bug this test exists to prevent
+
+
+def test_solution_step_start_finds_the_tag_bearing_step():
+    response = "First reasoning bit. More reasoning.\n</think>\n\nHere is the answer."
+    steps = split_into_step_texts(response)
+
+    boundary = solution_step_start(steps)
+
+    assert boundary is not None
+    assert "</think>" in steps[boundary]
+
+
+def test_solution_step_start_returns_none_without_a_closing_tag():
+    steps = split_into_step_texts("First reasoning bit. Second bit. Final answer is 7.")
+    assert solution_step_start(steps) is None
+
+
+def test_solution_step_start_matches_a_tag_split_mid_step():
+    """The tag rarely lands on a sentence boundary -- it should still be found inside
+    whichever step contains it, not silently missed."""
+    steps = ["No boundary here so </think> stays embedded mid-sentence and continues on."]
+    assert solution_step_start(steps) == 0
 
 
 def test_spans_stay_contiguous_when_a_token_straddles_a_boundary():

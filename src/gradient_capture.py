@@ -1,12 +1,7 @@
 """Phase 3: capture loss gradients, run per-sample SVD, emit step spectral strengths.
 
-    python src/gradient_capture.py --model-name Qwen/Qwen3-8B \
-        --data-path data/qwen3-8b/train-s1k-segmented.jsonl --output-dir data/qwen3-8b/spectral \
-        --strengths-path data/qwen3-8b/spectral-strengths.parquet --verify [--limit N]
-
 --verify cross-checks the analytic gradient against autograd on the first samples before
-processing the corpus, since the whole pipeline rests on that identity. --config points at a
-yaml with the same fields as a fallback/override base; CLI flags always win when both are given.
+processing the corpus, since the whole pipeline rests on that identity.
 """
 
 import argparse
@@ -49,19 +44,8 @@ def verify_against_autograd(
 ) -> float:
     """Max absolute deviation between analytic and autograd gradients (float32).
 
-    The autograd reference needs a backward graph, but only through the small linear
-    unembedding + softmax + CE step, not through the transformer backbone: running
-    model.model(...) itself under torch.enable_grad() (as an earlier version of this
-    function did, twice — once per call below) builds a full per-layer backward graph
-    for the *entire* sequence, retained until GC'd even though only the final hidden
-    state is used. At long cutoffs (paper Table 3: 32768) that graph alone is enough to
-    OOM a 40 GB GPU — independent of chunk_size, and just as expensive as if the main
-    capture path itself needed a backward pass (it doesn't: capture_sequence_gradients
-    is pure @torch.no_grad(), Eq. 1's closed form). The fix: run the backbone forward
-    once under no_grad (identical cost to the main capture path), then build the small
-    backward graph only on the already-detached hidden states, restricted to the first
-    `max_positions` target rows — just as conclusive, since the identity being checked
-    is per-position.
+    Only backprop through the small linear+CE head, not the transformer backbone -- doing
+    the latter builds a full per-layer graph that OOMs at the paper's 32768 cutoff (Table 3).
     """
     start, end = span
     span = (start, min(end, start + max_positions))
@@ -139,8 +123,7 @@ def main() -> None:
         records = records[args.shard_index :: args.num_shards]
         print(f"shard {args.shard_index}/{args.num_shards}: {len(records)} records assigned")
 
-    # Cast the unembedding to float32 once for the whole corpus; passed into every
-    # capture below so the (V x d) matrix isn't re-cast per sequence (V=151936 for Qwen3).
+    # Cast once for the whole corpus so the (V x d) matrix (V=151936 for Qwen3) isn't re-cast per sequence.
     unembedding = model.get_output_embeddings().weight.float()
 
     if args.verify and args.shard_index == 0:
@@ -158,8 +141,7 @@ def main() -> None:
         step_spans = record_step_spans(record)
         npz_path = output_dir / f"{record['id']}.npz"
 
-        # Resume: a sample whose per-sample .npz already exists is reused, skipping the GPU
-        # work, so a run interrupted at sample N restarts from N instead of from scratch.
+        # Resume: reuse an existing .npz instead of recomputing, so an interrupted run restarts from N, not 0.
         if npz_path.exists():
             cached = np.load(npz_path)
             rows.append(
@@ -192,8 +174,7 @@ def main() -> None:
         svd_times.append(result.svd_seconds)  # SVD wall time, cuda-synchronized inside
         del gradient_matrix
 
-        # per-sample spectrum written before appending the row, so the .npz is the durable
-        # unit of progress the resume path above keys on; the parquet below is what phase 4 reads
+        # Write the .npz before appending the row: it's the durable progress unit the resume path above keys on.
         np.savez_compressed(
             npz_path,
             k_star=result.k_star,

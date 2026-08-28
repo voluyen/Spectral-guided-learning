@@ -1,16 +1,7 @@
 """Phase 4: apply the energy threshold p, report drop stats, emit training masks.
 
-    python src/build_masks.py --data-path data/train-2k-segmented.jsonl --energy-threshold-p 0.95
-    python src/build_masks.py --data-path data/train-2k-segmented.jsonl --energy-threshold-p 0.95 --vanilla
-    python src/build_masks.py --data-path data/train-2k-segmented.jsonl --sweep 0.7,0.8,0.9,0.95
-                                                                             # sensitivity check only
-
-The paper's Eq. 8 leaves p unspecified — it is not published anywhere in the paper (main text
-or appendix). `--energy-threshold-p` is therefore an engineering choice, not a value taken from
-the paper. Use `--sweep` to check step-drop/token-drop ratios across candidate values (cheap:
-reuses the already-computed spectral strengths, no retraining) before committing to one value
-for the training runs. The vanilla baseline is emitted by the same code path as the spectral
-masks so the two training runs differ only in the loss mask.
+Eq. 8 leaves p unspecified in the paper, so `--energy-threshold-p` is an engineering choice --
+use `--sweep` to check drop ratios across candidate values before committing to one.
 """
 
 import argparse
@@ -55,9 +46,8 @@ def sweep_thresholds(
 ) -> dict[float, dict]:
     """Selection-stats summary for each candidate p, without writing any dataset file.
 
-    Reuses the spectral strengths already computed by gradient_capture.py, so this is a
-    seconds-fast sensitivity check: it answers "how much would each p actually drop?" before
-    spending GPU time on a training run built around a single, possibly-bad choice of p.
+    Reuses precomputed spectral strengths, so this is a seconds-fast check before
+    committing GPU time to a training run built around one choice of p.
     """
     summaries = {}
     for threshold in thresholds:
@@ -151,7 +141,6 @@ def main() -> None:
     summaries[f"spectral p={threshold}"] = summarize(
         emit_masked_dataset(records, strengths, threshold, spectral_path)
     )
-    # p is an engineering choice (see module docstring) — the paper does not publish Eq. 8's p.
     print(f"p={threshold} (not a paper-published value; run --sweep first to justify it) -> {spectral_path}")
 
     header = f"\n{'variant':<18} {'steps dropped':>14} {'median':>8} {'tokens dropped':>15} {'median':>8} {'keeps final':>12}"

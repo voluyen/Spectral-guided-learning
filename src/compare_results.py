@@ -7,9 +7,9 @@ import argparse
 import json
 from pathlib import Path
 
-BENCHMARK_ORDER = ["aime24", "aime25", "math500", "olympiadbench", "gpqa"]
-# Conclusions rest on the larger benchmarks; AIME (30 problems) and GPQA are noisy at this scale.
-PRIMARY_BENCHMARKS = {"math500", "olympiadbench"}
+BENCHMARK_ORDER = ["aime24", "aime25", "math500", "amc12"]
+# math500 is primary: AIME (30 problems) and AMC12 (83 problems) are too small to be reliable alone.
+PRIMARY_BENCHMARKS = {"math500"}
 
 
 def load_summaries(results_dir: Path) -> dict[str, dict[str, float]]:
@@ -20,6 +20,18 @@ def load_summaries(results_dir: Path) -> dict[str, dict[str, float]]:
         tag = rows[0]["model"] if rows else path.parent.name
         models[tag] = {row["benchmark"]: row["accuracy"] for row in rows}
     return models
+
+
+METHODS = ("vanilla", "spectral", "prucot")
+
+
+def split_tag(tag: str) -> tuple[str, str] | None:
+    """"spectral-qwen3-1.7b" -> ("spectral", "qwen3-1.7b"); None if no known method prefix."""
+    for method in METHODS:
+        prefix = f"{method}-"
+        if tag.startswith(prefix):
+            return method, tag[len(prefix) :]
+    return None
 
 
 def format_table(models: dict[str, dict[str, float]]) -> str:
@@ -38,12 +50,28 @@ def format_table(models: dict[str, dict[str, float]]) -> str:
             + (f"{sum(primary) / len(primary):.1%}" if primary else "-") + " |"
         )
 
-    if "vanilla" in models and "spectral" in models:
-        deltas = []
-        for name in benchmarks:
-            base, new = models["vanilla"].get(name), models["spectral"].get(name)
-            deltas.append(f"{(new - base) * 100:+.1f}" if base is not None and new is not None else "-")
-        lines.append("| **delta (pp)** | " + " | ".join(deltas) + " | | |")
+    # Group by track so vanilla-vs-spectral/prucot deltas are computed per model line
+    # (tags are always "<method>-<track>", never bare "vanilla"/"spectral").
+    tracks: dict[str, dict[str, str]] = {}
+    for tag in models:
+        parsed = split_tag(tag)
+        if parsed:
+            method, track = parsed
+            tracks.setdefault(track, {})[method] = tag
+
+    for track, by_method in tracks.items():
+        if "vanilla" not in by_method:
+            continue
+        base_scores = models[by_method["vanilla"]]
+        for method in ("spectral", "prucot"):
+            if method not in by_method:
+                continue
+            new_scores = models[by_method[method]]
+            deltas = []
+            for name in benchmarks:
+                base, new = base_scores.get(name), new_scores.get(name)
+                deltas.append(f"{(new - base) * 100:+.1f}" if base is not None and new is not None else "-")
+            lines.append(f"| **delta ({method} - vanilla, {track}) (pp)** | " + " | ".join(deltas) + " | | |")
 
     return "\n".join(lines)
 

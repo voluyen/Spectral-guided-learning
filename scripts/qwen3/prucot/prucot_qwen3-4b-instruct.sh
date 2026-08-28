@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 5: masked SFT -- SPECTRAL, Qwen3-4B-Instruct-2507 track (LoRA).
+# Phase 5: masked SFT -- PRU-COT baseline, Qwen3-4B-Instruct-2507 track (LoRA, same setup as spectral).
 set -euo pipefail
 
 GPUS=(4 5 6 7)
@@ -28,8 +28,8 @@ mkdir -p "${BASE_PATH}/logs"
 
 LOCAL_MODELS_ROOT="${LOCAL_MODELS_ROOT:-/mnt/local/_models/spectral-guided-learning}"
 MODEL_NAME="${LOCAL_MODELS_ROOT}/Qwen3-4B-Instruct-2507"
-DATA_PATH="${BASE_PATH}/data/qwen3-4b-instruct/train-spectral.jsonl"
-OUTPUT_DIR="${BASE_PATH}/checkpoints/spectral-qwen3-4b-instruct"
+DATA_PATH="${BASE_PATH}/data/qwen3-4b-instruct/train-prucot.jsonl"
+OUTPUT_DIR="${BASE_PATH}/checkpoints/prucot-qwen3-4b-instruct"
 EPOCHS=3
 LR=5.0e-5
 MIN_LR=1.0e-5
@@ -78,4 +78,4 @@ OPTS+=" --max-seq-len ${MAX_SEQ_LEN}"
 
 CMD="torchrun ${DISTRIBUTED_ARGS} ${BASE_PATH}/src/train_sft.py ${OPTS}"
 echo "${CMD}"
-${CMD} 2>&1 | tee "${BASE_PATH}/logs/spectral-qwen3-4b-instruct.log"
+${CMD} 2>&1 | tee "${BASE_PATH}/logs/prucot-qwen3-4b-instruct.log"

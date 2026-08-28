@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 3: gradient capture (--verify) for the Qwen3-1.7B track.
+# Phase 3 (Pru-CoT baseline): step-importance global optimization for the Qwen3-1.7B track.
 set -euo pipefail
 
 GPUS=(4 5 6 7)
@@ -17,22 +17,21 @@ mkdir -p logs
 LOCAL_MODELS_ROOT="${LOCAL_MODELS_ROOT:-/mnt/local/_models/spectral-guided-learning}"
 MODEL_NAME="${LOCAL_MODELS_ROOT}/Qwen3-1.7B"
 DATA_PATH="data/qwen3-1.7b/train-s1k-segmented.jsonl"
-OUTPUT_DIR="data/qwen3-1.7b/spectral"
-STRENGTHS_PATH="data/qwen3-1.7b/spectral-strengths.parquet"
-ENERGY_CUTOFF=0.95
-CHUNK_SIZE=1024
+OUTPUT_DIR="data/qwen3-1.7b/prucot"
+WEIGHTS_PATH="data/qwen3-1.7b/prucot-weights.parquet"
+EPOCHS=3
+LR=10
+FILLER_TOKEN="."
 
 OPTS=""
 OPTS+=" --model-name ${MODEL_NAME}"
 OPTS+=" --data-path ${DATA_PATH}"
 OPTS+=" --output-dir ${OUTPUT_DIR}"
-OPTS+=" --strengths-path ${STRENGTHS_PATH}"
-OPTS+=" --energy-cutoff ${ENERGY_CUTOFF}"
-OPTS+=" --chunk-size ${CHUNK_SIZE}"
-OPTS+=" --verify"
+OPTS+=" --weights-path ${WEIGHTS_PATH}"
+OPTS+=" --epochs ${EPOCHS}"
+OPTS+=" --lr ${LR}"
+OPTS+=" --filler-token ${FILLER_TOKEN}"
 
-CMD="python ${BASE_PATH}/src/gradient_capture.py ${OPTS}"
+CMD="python ${BASE_PATH}/src/prucot_weight.py ${OPTS}"
 echo "${CMD}"
-${CMD} 2>&1 | tee logs/qwen3-1.7b-capture.log
-
-echo ">>> STOP AND READ: check 'k*/T mean ratio' and 'strength spread' above (docs/server-runbook.md §5)."
+${CMD} 2>&1 | tee logs/qwen3-1.7b-prucot-weight.log

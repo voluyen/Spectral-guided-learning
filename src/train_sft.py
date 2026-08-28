@@ -1,10 +1,7 @@
 """Phase 5: masked supervised fine-tuning (paper Eq. 9).
 
-    ./scripts/qwen3/sft/sft_qwen3-1.7b.sh        # vanilla
-    ./scripts/qwen3/spectral/spectral_qwen3-1.7b.sh   # spectral
-
-Both runs share this code path; only the loss mask in the dataset differs. The shell
-launchers pass every setting as a CLI flag (--config also works, if a yaml is preferred).
+Shared by both the vanilla and spectral SFT launchers (scripts/qwen3/{sft,spectral}/) --
+only the loss mask in the dataset differs. Settings come from CLI flags or --config.
 """
 
 import argparse
@@ -24,9 +21,15 @@ from masked_loss import masked_cross_entropy
 class MaskedSFTDataset(Dataset):
     """JSONL records of {input_ids, loss_mask} produced by build_masks.py."""
 
-    def __init__(self, path: str):
+    def __init__(self, path: str, max_seq_len: int | None = None):
         with open(path) as handle:
             self.records = [json.loads(line) for line in handle]
+        if max_seq_len is not None:
+            before = len(self.records)
+            self.records = [r for r in self.records if len(r["input_ids"]) <= max_seq_len]
+            dropped = before - len(self.records)
+            if dropped:
+                print(f"--max-seq-len {max_seq_len}: dropped {dropped}/{before} samples (too long to fit in GPU memory at batch size 1)")
 
     def __len__(self) -> int:
         return len(self.records)
@@ -41,12 +44,10 @@ class MaskedSFTDataset(Dataset):
 class MaskedSFTTrainer(Trainer):
     """Trainer applying the selective masked objective instead of the default LM loss.
 
-    Declaring `model_accepts_loss_kwargs` makes Trainer count supervised tokens across
-    every microbatch of a gradient-accumulation step and pass that count as
-    `num_items_in_batch`; using it as Z yields one sum/Z per optimizer step (Eq. 9), and
-    Trainer then skips its own division by the accumulation count. Averaging microbatch
-    losses instead would over-weight sparsely supervised sequences — which is exactly what
-    the spectral masks create.
+    `model_accepts_loss_kwargs=True` makes Trainer sum supervised-token counts across a whole
+    gradient-accumulation step and pass it as `num_items_in_batch`, used as Z in Eq. 9 --
+    averaging per-microbatch losses instead would over-weight sparsely-supervised sequences
+    (exactly what spectral masks create).
     """
 
     def __init__(self, *args, **kwargs):
@@ -71,32 +72,28 @@ def build_training_arguments(config: dict) -> TrainingArguments:
         learning_rate=config["learning_rate"],
         lr_scheduler_type="cosine_with_min_lr",
         lr_scheduler_kwargs={"min_lr": config["min_learning_rate"]},
-        warmup_ratio=config["warmup_ratio"],
+        warmup_ratio=config["warmup_ratio"],  # deprecated in transformers>=5 (still functions correctly)
         bf16=on_gpu,
         use_cpu=not on_gpu,
         gradient_checkpointing=on_gpu,
-        # Reentrant checkpointing (the default) re-enters the backward graph and trips DDP's
-        # "mark variable ready only once" assertion when combined with LoRA's frozen base
-        # params (multi-GPU only -- single-GPU runs never wrap the model in DDP, so this never
-        # surfaced before). Non-reentrant checkpointing avoids the double-backward entirely.
+        # Reentrant checkpointing trips DDP's "mark variable ready only once" assertion with
+        # LoRA's frozen base params (multi-GPU only); non-reentrant avoids the double-backward.
         gradient_checkpointing_kwargs={"use_reentrant": False} if on_gpu else None,
         logging_steps=config.get("logging_steps", 5),
-        # save_strategy "epoch" (default) or "steps" (then save_steps controls the interval);
-        # "no" disables intermediate checkpoints (final trainer.save_model still runs).
+        # save_strategy: "epoch"/"steps" as usual; "no" skips intermediate checkpoints (final save still runs).
         save_strategy=config.get("save_strategy", "epoch"),
         save_steps=config.get("save_steps", 500),
         save_total_limit=config.get("save_total_limit", 6),
         report_to=[],
         seed=config.get("seed", 42),
         remove_unused_columns=False,
+        deepspeed=config.get("deepspeed_config"),
     )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    # --config is optional: a shell launcher (scripts/train.sh) can pass every setting as a CLI
-    # flag instead of a yaml. When both are given, CLI flags override the yaml. When neither
-    # supplies model_name/data_path/output_dir, we fail with a clear message below.
+    # --config is an optional yaml base; CLI flags below override it when both are given.
     parser.add_argument("--config")
     parser.add_argument("--smoke", action="store_true", help="tiny run to validate the setup")
     parser.add_argument("--model-name")
@@ -111,6 +108,20 @@ def main() -> None:
     parser.add_argument("--attn-implementation")
     parser.add_argument("--seed", type=int)
     parser.add_argument("--logging-steps", type=int)
+    parser.add_argument(
+        "--deepspeed-config",
+        help="path to a DeepSpeed json config (e.g. configs/deepspeed/ds_config_zero2_offload.json); "
+        "batch size/grad accum/bf16 fields there are \"auto\", filled in from the flags above. "
+        "ZeRO-2 + optimizer CPU offload for long-sequence runs that OOM at --per-device-batch-size 1.",
+    )
+    parser.add_argument(
+        "--max-seq-len", type=int,
+        help="drop samples with more than this many input_ids before training. Optimizer-state "
+        "offload (--deepspeed-config) doesn't reduce per-sample activation memory -- a single very "
+        "long sequence at --per-device-batch-size 1 can still OOM regardless. Empirically measured "
+        "on a 40GB GPU (Qwen3-1.7B, this LoRA config, gradient checkpointing on): ~31GB peak at "
+        "12k tokens, ~40GB (no margin) at 16k, OOM at 20k -- pick a value with headroom for your GPU.",
+    )
     # checkpointing
     parser.add_argument("--save-strategy", choices=["epoch", "steps", "no"])
     parser.add_argument("--save-steps", type=int, help="interval when --save-strategy=steps")
@@ -144,6 +155,8 @@ def main() -> None:
         "attn_implementation": args.attn_implementation,
         "seed": args.seed,
         "logging_steps": args.logging_steps,
+        "deepspeed_config": args.deepspeed_config,
+        "max_seq_len": args.max_seq_len,
         "save_strategy": args.save_strategy,
         "save_steps": args.save_steps,
         "save_total_limit": args.save_total_limit,
@@ -161,7 +174,7 @@ def main() -> None:
         parser.error(f"missing required settings (pass via --config or CLI flags): {missing}")
 
     tokenizer = AutoTokenizer.from_pretrained(config["model_name"])
-    dataset = MaskedSFTDataset(config["data_path"])
+    dataset = MaskedSFTDataset(config["data_path"], max_seq_len=config.get("max_seq_len"))
 
     if args.smoke:
         dataset.records = dataset.records[:8]
@@ -212,8 +225,8 @@ def main() -> None:
         trainer.model.merge_and_unload().save_pretrained(config["output_dir"])
     else:
         # --no-lora-merge: trainer.save_model() on a PEFT model saves adapter weights only
-        # (adapter_config.json + adapter_model.safetensors, tens-hundreds of MB) instead of a
-        # full ~16GB checkpoint; evaluate.py loads it as a LoRA adapter on top of the base model.
+        # (tens-hundreds of MB) instead of a full ~16GB checkpoint; evaluate.py loads it as a
+        # LoRA adapter on top of the base model.
         trainer.save_model(config["output_dir"])
     tokenizer.save_pretrained(config["output_dir"])
 

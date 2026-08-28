@@ -2,7 +2,7 @@
 # Phase 5: masked SFT -- VANILLA baseline, Qwen3-1.7B track (LoRA, DDP across both GPUs).
 set -euo pipefail
 
-GPUS=(2 3)
+GPUS=(4 5 6 7)
 export CUDA_VISIBLE_DEVICES=$(IFS=,; echo "${GPUS[*]}")
 export TOKENIZERS_PARALLELISM=false
 export HF_HUB_DISABLE_SYMLINKS_WARNING=1
@@ -19,35 +19,37 @@ DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE \
                   --master_port $MASTER_PORT"
 
 BASE_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-if [[ -z "${VIRTUAL_ENV:-}" && -f "${BASE_PATH}/.venv/bin/activate" ]]; then
+if [[ -z "${VIRTUAL_ENV:-}" ]]; then
+  [[ -f "${BASE_PATH}/.venv/bin/activate" ]] || "${BASE_PATH}/scripts/setup.sh"
   source "${BASE_PATH}/.venv/bin/activate"
 fi
 export PYTHONPATH="${BASE_PATH}/src"
 mkdir -p "${BASE_PATH}/logs"
 
-# model + data
-MODEL_NAME="Qwen/Qwen3-1.7B"
+LOCAL_MODELS_ROOT="${LOCAL_MODELS_ROOT:-/mnt/local/_models/spectral-guided-learning}"
+MODEL_NAME="${LOCAL_MODELS_ROOT}/Qwen3-1.7B"
 DATA_PATH="${BASE_PATH}/data/qwen3-1.7b/train-vanilla.jsonl"
 OUTPUT_DIR="${BASE_PATH}/checkpoints/vanilla-qwen3-1.7b"
-# hp
 EPOCHS=3
 LR=5.0e-5
 MIN_LR=1.0e-5
 WARMUP_RATIO=0.1
 BATCH_SIZE=1
-GRAD_ACC=4
+GRAD_ACC=8
 ATTN=sdpa
 LOG_INTERVAL=5
 SEED=42
-# runtime
 SAVE_STRATEGY=epoch
 SAVE_STEPS=500
 SAVE_TOTAL_LIMIT=6
-# LoRA
 LORA_R=16
 LORA_ALPHA=32
 LORA_DROPOUT=0.05
 LORA_TARGET_MODULES="q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
+# ZeRO-2 offload for long-sequence headroom on VRAM-limited GPUs.
+DS_CONFIG="${BASE_PATH}/configs/deepspeed/ds_config_zero2_offload.json"
+# Spectral paper's own Cutoff Length (Table 3); no-op on this track's data (max ~27k).
+MAX_SEQ_LEN=32768
 
 OPTS=""
 OPTS+=" --model-name ${MODEL_NAME}"
@@ -71,6 +73,8 @@ OPTS+=" --lora-alpha ${LORA_ALPHA}"
 OPTS+=" --lora-dropout ${LORA_DROPOUT}"
 OPTS+=" --lora-target-modules ${LORA_TARGET_MODULES}"
 OPTS+=" --no-lora-merge"
+OPTS+=" --deepspeed-config ${DS_CONFIG}"
+OPTS+=" --max-seq-len ${MAX_SEQ_LEN}"
 
 CMD="torchrun ${DISTRIBUTED_ARGS} ${BASE_PATH}/src/train_sft.py ${OPTS}"
 echo "${CMD}"
