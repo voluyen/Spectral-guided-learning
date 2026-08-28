@@ -1,9 +1,4 @@
-"""Dynamic truncation selection of reasoning steps (paper Eq. 8) and token-mask emission.
-
-Given per-step spectral strengths, keep the minimal set of steps whose cumulative
-strength reaches a fraction p of the total, then expand that step set into a
-token-level loss mask M_t used by the masked training objective (Eq. 9).
-"""
+"""Dynamic truncation selection of reasoning steps (paper Eq. 8) and token-mask emission (Eq. 9)."""
 
 
 def select_steps_by_energy(strengths: list[float], energy_threshold: float) -> list[int]:

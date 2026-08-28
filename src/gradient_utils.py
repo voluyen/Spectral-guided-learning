@@ -1,12 +1,7 @@
 """Analytic loss-gradient capture w.r.t. final hidden states (paper Eq. 1).
 
-For a causal LM with unembedding W_U (V x d), the cross-entropy loss of target token
-y at a position whose predicting hidden state is h has gradient
-
-    g = d(CE) / dh = W_U^T (softmax(W_U h) - onehot(y))   in R^d
-
-so no backward pass is needed. Computed in chunks over target positions to avoid
-materializing the full (T x V) logits matrix for long sequences.
+g = d(CE)/dh = W_U^T (softmax(W_U h) - onehot(y)) -- closed form, no backward pass needed.
+Chunked over target positions to avoid materializing the full (T x V) logits matrix.
 """
 
 import torch
@@ -78,12 +73,10 @@ def capture_sequence_gradients(
 ) -> torch.Tensor:
     """Forward one sequence and return its gradient matrix G over the supervised span.
 
-    Uses model.model(...) to skip the lm_head projection over all positions; the
-    unembedding is applied chunk-wise inside analytic_hidden_gradients instead.
-
-    unembedding: pass a pre-cast (float32) unembedding to reuse it across a corpus run;
-    when None it is fetched from the model each call (the analytic_hidden_gradients
-    .float() is then a no-op on an already-float32 tensor, so results are unchanged).
+    Uses model.model(...) to skip the lm_head projection over all positions; unembedding
+    is applied chunk-wise inside analytic_hidden_gradients instead. Pass a pre-cast
+    float32 unembedding to reuse across a corpus run (optional -- otherwise fetched per
+    call, with no numeric difference).
     """
     if input_ids.dim() == 1:
         input_ids = input_ids.unsqueeze(0)

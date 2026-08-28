@@ -26,7 +26,8 @@ fi
 export PYTHONPATH="${BASE_PATH}/src"
 mkdir -p "${BASE_PATH}/logs"
 
-MODEL_NAME="Qwen/Qwen3-4B-Instruct-2507"
+LOCAL_MODELS_ROOT="${LOCAL_MODELS_ROOT:-/mnt/local/_models/spectral-guided-learning}"
+MODEL_NAME="${LOCAL_MODELS_ROOT}/Qwen3-4B-Instruct-2507"
 DATA_PATH="${BASE_PATH}/data/qwen3-4b-instruct/train-vanilla.jsonl"
 OUTPUT_DIR="${BASE_PATH}/checkpoints/vanilla-qwen3-4b-instruct"
 EPOCHS=3

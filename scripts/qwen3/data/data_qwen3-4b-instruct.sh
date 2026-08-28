@@ -11,8 +11,11 @@ fi
 export PYTHONPATH="${BASE_PATH}/src"
 mkdir -p logs "data/qwen3-4b-instruct"
 
-MODEL_NAME="Qwen/Qwen3-4B-Instruct-2507"
-DATASET_NAME="VoCuc/s1K-1.1-DeepSeek-R1-Distill-Qwen-32B"
+# Offline server: no HF Hub access, load from local mirrors (see download.txt).
+LOCAL_MODELS_ROOT="${LOCAL_MODELS_ROOT:-/mnt/local/_models/spectral-guided-learning}"
+LOCAL_DATA_ROOT="${LOCAL_DATA_ROOT:-/mnt/local/_data/spectral-guided-learning}"
+MODEL_NAME="${LOCAL_MODELS_ROOT}/Qwen3-4B-Instruct-2507"
+DATASET_NAME="${LOCAL_DATA_ROOT}/s1K-1.1-DeepSeek-R1-Distill-Qwen-32B"
 OUTPUT_PATH="data/qwen3-4b-instruct/train-s1k-segmented.jsonl"
 N_SAMPLES=1050
 MAX_TOKENS=32768

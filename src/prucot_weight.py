@@ -6,19 +6,9 @@ interpolates its token embeddings with a fixed filler-token embedding, optimized
 minimize the loss on the supervised span -- gradients that restore accuracy pull w_t toward 1
 for causally load-bearing steps, while steps that contribute nothing stay near init or drop to 0.
 
-Per Eq. 2 and the paper's own code (chat/think labels are both -100, only the solution is
-supervised), the probe loss must target only the final solution. This project's segmented data
-has no separate solution field, but its actual training source --
-VoCuc/s1K-1.1-DeepSeek-R1-Distill-Qwen-32B -- guarantees a "</think>" tag between CoT and
-solution: data_prep.py builds every response as "<think>\n{trajectory}\n</think>\n\n{attempt}"
-(1000/1000 rows have both source columns). See segmentation.solution_step_start() and
-probe_scope() below, which split each record into a scored chain-of-thought and an unscored,
-always-supervised solution tail; records without the tag fall back to scoring/supervising the
-whole response.
-
-    python src/prucot_weight.py --model-name Qwen/Qwen3-8B \
-        --data-path data/qwen3-8b/train-s1k-segmented.jsonl --output-dir data/qwen3-8b/prucot \
-        --weights-path data/qwen3-8b/prucot-weights.parquet
+See probe_scope() below and segmentation.solution_step_start() for how each record is split
+into a scored chain-of-thought and an unscored, always-supervised solution tail (paper Eq. 2:
+only the solution is supervised).
 
 --config points at a yaml with the same fields as a fallback/override base; CLI flags always
 win when both are given. Unlike gradient_capture.py's single closed-form pass, this backprops
@@ -45,12 +35,9 @@ IGNORE_INDEX = -100
 def build_replacement_mask(
     seq_len: int, step_spans: list[tuple[int, int]], weights: torch.Tensor, device
 ) -> torch.Tensor:
-    """Per-position soft-mask (1, seq_len, 1): weights[s] over step s's span, 1.0 elsewhere.
-
-    Positions outside every step span (the prompt) are never replaced by noise -- only
-    response steps are candidates for pruning (paper Section 3.3). `mask` starts as a
-    requires_grad=False leaf, so the in-place slice writes below turn it into a non-leaf
-    tensor carrying gradient back to `weights` (same pattern as the paper's own code).
+    """Per-position soft-mask (1, seq_len, 1): weights[s] over step s's span, 1.0 elsewhere (only
+    response steps are prunable, paper Section 3.3). The in-place slice writes below turn this
+    leaf tensor into a non-leaf carrying gradient back to `weights` (mirrors the paper's code).
     """
     mask = torch.ones(1, seq_len, 1, device=device, dtype=weights.dtype)
     for index, (start, end) in enumerate(step_spans):
@@ -232,8 +219,7 @@ def main() -> None:
         step_spans = record_step_spans(record)
         npz_path = output_dir / f"{record['id']}.npz"
 
-        # Resume: mirrors gradient_capture.py -- an existing .npz is reused, so a crash
-        # restarts from N instead of from scratch.
+        # Resume: existing .npz is reused (mirrors gradient_capture.py), so a crash restarts from N.
         if npz_path.exists():
             cached = np.load(npz_path)
             rows.append({"id": record["id"], "step_weights": [float(x) for x in cached["step_weights"]]})
@@ -243,9 +229,8 @@ def main() -> None:
         input_ids = torch.tensor([record["input_ids"]], device=device)
         attention_mask = torch.ones_like(input_ids)
 
-        # Decoded (not re-split from record["response"]): step_token_spans can drop a
-        # zero-token piece split_into_step_texts would still emit, so this is the only way to
-        # stay 1:1 with step_spans.
+        # Decoded rather than re-split from record["response"]: step_token_spans can drop zero-
+        # token pieces split_into_step_texts would still emit, so decoding stays 1:1 with step_spans.
         step_texts = [tokenizer.decode(record["input_ids"][start:end]) for start, end in step_spans]
         cot_step_spans, supervised_span = probe_scope(
             step_spans, step_texts, tuple(record["response_token_span"])

@@ -1,15 +1,8 @@
 """Phase 2: sample long-CoT trajectories, tokenize, and segment them into steps.
 
-Output: JSONL with one record per sample containing input_ids, the supervised response
-span, and absolute token spans for every reasoning step. Step text is not stored — it is
-recovered exactly by decoding input_ids[token_start:token_end] (round-trip asserted below).
-
-    python src/data_prep.py --dataset-name VoCuc/s1K-1.1-DeepSeek-R1-Distill-Qwen-32B --n-samples 1050 \
-        --max-tokens 32768 --tokenizer Qwen/Qwen3-8B --output-path data/qwen3-8b/train-s1k-segmented.jsonl
-
---config points at a yaml with the same fields as a fallback/override base; CLI flags always
-win when both are given (see e.g. scripts/qwen3/data/data_qwen3-8b.sh for the equivalent
-CLI-only pattern used by every phase's shell launcher).
+Output: JSONL per sample with input_ids, the response span, and absolute token spans per
+reasoning step -- step text isn't stored, it's recovered by decoding
+input_ids[token_start:token_end] (round-trip asserted below).
 """
 
 import argparse
@@ -55,9 +48,9 @@ def build_record(
     Returns None when the sample exceeds `max_tokens`, so over-length samples — the most
     expensive ones — are rejected right after tokenizing, before any span mapping.
     """
-    # The tokenizer normalizes to NFC internally, so normalize before storing the text:
-    # AceReason contains decomposed forms (U+2261 + U+0338 for "≢") that the ids collapse
-    # to one codepoint, which would leave `response` unrecoverable from its own token span.
+    # NFC-normalize before storing: some sources (e.g. AceReason) use decomposed forms
+    # (U+2261+U+0338 for "≢") that the tokenizer collapses to one codepoint, which would
+    # break token-span recovery otherwise.
     problem = unicodedata.normalize("NFC", problem)
     response = unicodedata.normalize("NFC", response)
 
@@ -144,8 +137,7 @@ def collect_records(tokenizer, config: dict, limit_scan: int) -> tuple[list[dict
     The bar tracks accepted records; its postfix carries the rejection counts, since a
     stalled bar with a climbing `scanned` means the filters are eating the corpus.
     """
-    # The stream yields nothing until datasets fills its shuffle buffer (SHUFFLE_BUFFER
-    # rows downloaded), so warn before the bar sits at 0 and looks hung.
+    # Warn before the bar sits at 0: streaming yields nothing until the shuffle buffer fills.
     print(f"buffering {SHUFFLE_BUFFER:,} rows for the shuffled stream (network-bound)...", flush=True)
 
     records, counts = [], {"scanned": 0, "skipped_long": 0, "skipped_few_steps": 0}

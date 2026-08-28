@@ -58,9 +58,8 @@ def analyze_gradient_matrix(
 ) -> SpectralResult:
     """SVD of G (T x d) -> k* at energy_cutoff -> step-level spectral strengths.
 
-    SVD runs in float32 on G's device; results returned on CPU. `svd_seconds` isolates the
-    SVD call's wall time, synchronizing the CUDA stream around it so the number reflects the
-    real device compute rather than async-launch latency.
+    Runs in float32 on G's device, results returned on CPU. `svd_seconds` synchronizes CUDA
+    around the SVD call so it measures real device compute, not async-launch latency.
     """
     g32 = gradient_matrix.float()
     on_cuda = g32.is_cuda

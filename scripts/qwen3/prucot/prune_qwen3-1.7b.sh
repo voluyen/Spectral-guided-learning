@@ -17,8 +17,9 @@ mkdir -p "${BASE_PATH}/logs"
 
 DATA_PATH="${BASE_PATH}/data/qwen3-1.7b/train-s1k-segmented.jsonl"
 WEIGHTS_PATH="${BASE_PATH}/data/qwen3-1.7b/prucot-weights.parquet"
-TOKENIZER="Qwen/Qwen3-1.7B"
-PRUNING_AGENT="Qwen/Qwen2.5-1.5B-Instruct"
+LOCAL_MODELS_ROOT="${LOCAL_MODELS_ROOT:-/mnt/local/_models/spectral-guided-learning}"
+TOKENIZER="${LOCAL_MODELS_ROOT}/Qwen3-1.7B"
+PRUNING_AGENT="${LOCAL_MODELS_ROOT}/Qwen2.5-1.5B-Instruct"
 OUTPUT_PATH="${BASE_PATH}/data/qwen3-1.7b/train-prucot.jsonl"
 CANDIDATE_THRESHOLD=0.5
 MEDIAN_GATE_THRESHOLD=1.0

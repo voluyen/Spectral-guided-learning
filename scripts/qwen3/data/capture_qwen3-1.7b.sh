@@ -14,7 +14,8 @@ fi
 export PYTHONPATH="${BASE_PATH}/src"
 mkdir -p logs
 
-MODEL_NAME="Qwen/Qwen3-1.7B"
+LOCAL_MODELS_ROOT="${LOCAL_MODELS_ROOT:-/mnt/local/_models/spectral-guided-learning}"
+MODEL_NAME="${LOCAL_MODELS_ROOT}/Qwen3-1.7B"
 DATA_PATH="data/qwen3-1.7b/train-s1k-segmented.jsonl"
 OUTPUT_DIR="data/qwen3-1.7b/spectral"
 STRENGTHS_PATH="data/qwen3-1.7b/spectral-strengths.parquet"

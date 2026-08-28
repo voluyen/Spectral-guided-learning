@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Phase 6: eval the Qwen2.5-7B-Instruct spectral LoRA adapter with vLLM, Pass@1, on P-ALIGN's 4
-# benchmarks (directly comparable to its Table 1 row).
+# Phase 6: eval spectral LoRA adapter (vLLM, Pass@1) on P-ALIGN's 4 benchmarks -- directly comparable to its Table 1 row.
 #   ./scripts/qwen25/eval/eval_qwen25-7b.sh [model_path] [tag]
 set -euo pipefail
 

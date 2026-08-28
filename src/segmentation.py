@@ -1,16 +1,11 @@
 """Step segmentation of long CoT responses with exact token-offset boundaries.
 
-The paper specifies "standardized step-wise segmentation" without details; we split at
-logical boundaries — after sentence-ending punctuation (or a closing brace/bracket, which
-ends inline LaTeX) followed by whitespace and a capital letter. The split is deterministic
-and preserves semantically complete steps. No post-hoc merging is applied: every boundary
-found by the rule becomes a step, so segmentation depends only on the text itself.
+The paper doesn't specify a segmentation rule, so we split at sentence-ending punctuation
+(or a closing brace/bracket, ending inline LaTeX) followed by whitespace and a capital letter.
 
-Boundaries are found in character space, then mapped to token indices via the character
-offsets the tokenizer reports for its single, canonical pass over the response. The
-response is never tokenized piecewise: BPE is context-dependent, so tokenizing steps
-separately and concatenating yields token ids the model was never pretrained on (a lone
-whitespace token at each step start instead of a merged " Word" token).
+Boundaries are found in character space and mapped to token offsets from a single tokenizer
+pass over the whole response -- never tokenized piecewise, since BPE is context-dependent and
+splitting per step would yield token ids the model was never pretrained on.
 """
 
 import bisect
@@ -44,15 +39,11 @@ def record_step_spans(record: dict) -> list[tuple[int, int]]:
 
 
 def solution_step_start(step_texts: list[str]) -> int | None:
-    """Index of the first step belonging to the final solution, for methods (Pru-CoT) that
-    treat the chain-of-thought T = (s1..sS) and the solution y as separate: y is never one of
-    T's steps. This project's actual training source, VoCuc/s1K-1.1-DeepSeek-R1-Distill-Qwen-32B,
-    guarantees this split: data_prep.py builds every response as
-    "<think>\n{trajectory}\n</think>\n\n{attempt}" (1000/1000 rows have both source columns).
-    The tag rarely lands on one of split_into_step_texts' sentence-boundary cuts, so the step
-    whose own text contains "</think>" -- and every step after it -- counts as solution
-    content, rather than splitting mid-tag. Returns None when no "</think>" is present at all
-    (a data source without this structure), so callers can fall back to the whole response.
+    """Index of the first step belonging to the final solution, for methods (Pru-CoT) that treat
+    the CoT and solution as separate. Our source guarantees every response is
+    "<think>\n{trajectory}\n</think>\n\n{attempt}" (data_prep.py); since the tag rarely lands on
+    a step boundary, the step whose text *contains* "</think>" (and everything after) counts as
+    solution. Returns None (whole-response fallback) when no tag is present.
     """
     for index, text in enumerate(step_texts):
         if "</think>" in text:

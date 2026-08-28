@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Phase 4 (Pru-CoT baseline): LLM-guided pruning for the Qwen3-4B-Instruct-2507 track.
+# Phase 4 (Pru-CoT baseline): LLM-guided pruning for the Qwen3-4B-Instruct-2507 track (agent:
+# Qwen2.5-3B-Instruct, scale-matched to the student per paper Section 4.4 -- an oversized agent prunes steps the student still needs).
 set -euo pipefail
 
 GPUS=(4 5 6 7)
@@ -17,8 +18,9 @@ mkdir -p "${BASE_PATH}/logs"
 
 DATA_PATH="${BASE_PATH}/data/qwen3-4b-instruct/train-s1k-segmented.jsonl"
 WEIGHTS_PATH="${BASE_PATH}/data/qwen3-4b-instruct/prucot-weights.parquet"
-TOKENIZER="Qwen/Qwen3-4B-Instruct-2507"
-PRUNING_AGENT="Qwen/Qwen2.5-7B-Instruct"
+LOCAL_MODELS_ROOT="${LOCAL_MODELS_ROOT:-/mnt/local/_models/spectral-guided-learning}"
+TOKENIZER="${LOCAL_MODELS_ROOT}/Qwen3-4B-Instruct-2507"
+PRUNING_AGENT="${LOCAL_MODELS_ROOT}/Qwen2.5-3B-Instruct"
 OUTPUT_PATH="${BASE_PATH}/data/qwen3-4b-instruct/train-prucot.jsonl"
 CANDIDATE_THRESHOLD=0.5
 MEDIAN_GATE_THRESHOLD=1.0

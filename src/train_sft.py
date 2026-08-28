@@ -1,10 +1,7 @@
 """Phase 5: masked supervised fine-tuning (paper Eq. 9).
 
-    ./scripts/qwen3/sft/sft_qwen3-1.7b.sh        # vanilla
-    ./scripts/qwen3/spectral/spectral_qwen3-1.7b.sh   # spectral
-
-Both runs share this code path; only the loss mask in the dataset differs. The shell
-launchers pass every setting as a CLI flag (--config also works, if a yaml is preferred).
+Shared by both the vanilla and spectral SFT launchers (scripts/qwen3/{sft,spectral}/) --
+only the loss mask in the dataset differs. Settings come from CLI flags or --config.
 """
 
 import argparse
@@ -47,12 +44,10 @@ class MaskedSFTDataset(Dataset):
 class MaskedSFTTrainer(Trainer):
     """Trainer applying the selective masked objective instead of the default LM loss.
 
-    Declaring `model_accepts_loss_kwargs` makes Trainer count supervised tokens across
-    every microbatch of a gradient-accumulation step and pass that count as
-    `num_items_in_batch`; using it as Z yields one sum/Z per optimizer step (Eq. 9), and
-    Trainer then skips its own division by the accumulation count. Averaging microbatch
-    losses instead would over-weight sparsely supervised sequences — which is exactly what
-    the spectral masks create.
+    `model_accepts_loss_kwargs=True` makes Trainer sum supervised-token counts across a whole
+    gradient-accumulation step and pass it as `num_items_in_batch`, used as Z in Eq. 9 --
+    averaging per-microbatch losses instead would over-weight sparsely-supervised sequences
+    (exactly what spectral masks create).
     """
 
     def __init__(self, *args, **kwargs):
@@ -77,18 +72,15 @@ def build_training_arguments(config: dict) -> TrainingArguments:
         learning_rate=config["learning_rate"],
         lr_scheduler_type="cosine_with_min_lr",
         lr_scheduler_kwargs={"min_lr": config["min_learning_rate"]},
-        warmup_ratio=config["warmup_ratio"],
+        warmup_ratio=config["warmup_ratio"],  # deprecated in transformers>=5 (still functions correctly)
         bf16=on_gpu,
         use_cpu=not on_gpu,
         gradient_checkpointing=on_gpu,
-        # Reentrant checkpointing (the default) re-enters the backward graph and trips DDP's
-        # "mark variable ready only once" assertion when combined with LoRA's frozen base
-        # params (multi-GPU only -- single-GPU runs never wrap the model in DDP, so this never
-        # surfaced before). Non-reentrant checkpointing avoids the double-backward entirely.
+        # Reentrant checkpointing trips DDP's "mark variable ready only once" assertion with
+        # LoRA's frozen base params (multi-GPU only); non-reentrant avoids the double-backward.
         gradient_checkpointing_kwargs={"use_reentrant": False} if on_gpu else None,
         logging_steps=config.get("logging_steps", 5),
-        # save_strategy "epoch" (default) or "steps" (then save_steps controls the interval);
-        # "no" disables intermediate checkpoints (final trainer.save_model still runs).
+        # save_strategy: "epoch"/"steps" as usual; "no" skips intermediate checkpoints (final save still runs).
         save_strategy=config.get("save_strategy", "epoch"),
         save_steps=config.get("save_steps", 500),
         save_total_limit=config.get("save_total_limit", 6),
@@ -101,9 +93,7 @@ def build_training_arguments(config: dict) -> TrainingArguments:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    # --config is optional: a shell launcher (scripts/train.sh) can pass every setting as a CLI
-    # flag instead of a yaml. When both are given, CLI flags override the yaml. When neither
-    # supplies model_name/data_path/output_dir, we fail with a clear message below.
+    # --config is an optional yaml base; CLI flags below override it when both are given.
     parser.add_argument("--config")
     parser.add_argument("--smoke", action="store_true", help="tiny run to validate the setup")
     parser.add_argument("--model-name")
@@ -235,8 +225,8 @@ def main() -> None:
         trainer.model.merge_and_unload().save_pretrained(config["output_dir"])
     else:
         # --no-lora-merge: trainer.save_model() on a PEFT model saves adapter weights only
-        # (adapter_config.json + adapter_model.safetensors, tens-hundreds of MB) instead of a
-        # full ~16GB checkpoint; evaluate.py loads it as a LoRA adapter on top of the base model.
+        # (tens-hundreds of MB) instead of a full ~16GB checkpoint; evaluate.py loads it as a
+        # LoRA adapter on top of the base model.
         trainer.save_model(config["output_dir"])
     tokenizer.save_pretrained(config["output_dir"])
 

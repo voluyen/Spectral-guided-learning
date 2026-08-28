@@ -9,6 +9,8 @@ GPUS=(4 5 6 7)
 export CUDA_VISIBLE_DEVICES=$(IFS=,; echo "${GPUS[*]}")
 export TOKENIZERS_PARALLELISM=false
 export HF_HUB_DISABLE_SYMLINKS_WARNING=1
+# Offline server: benchmarks.py resolves aime24/aime25/math500/amc12 from here (see download.txt).
+export BENCH_DATA_ROOT="${BENCH_DATA_ROOT:-/mnt/local/_data/spectral-guided-learning}"
 
 BASE_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 if [[ -z "${VIRTUAL_ENV:-}" ]]; then
@@ -18,8 +20,9 @@ fi
 export PYTHONPATH="${BASE_PATH}/src"
 mkdir -p "${BASE_PATH}/logs"
 
+LOCAL_MODELS_ROOT="${LOCAL_MODELS_ROOT:-/mnt/local/_models/spectral-guided-learning}"
 MODEL="${BASE_PATH}/checkpoints/spectral-qwen3-1.7b"
-BASE_MODEL="Qwen/Qwen3-1.7B"
+BASE_MODEL="${LOCAL_MODELS_ROOT}/Qwen3-1.7B"
 TAG="spectral-qwen3-1.7b"
 [[ -n "${1:-}" ]] && MODEL="$1"
 [[ -n "${2:-}" ]] && TAG="$2"

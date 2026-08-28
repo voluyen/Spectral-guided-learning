@@ -8,9 +8,7 @@ import json
 from pathlib import Path
 
 BENCHMARK_ORDER = ["aime24", "aime25", "math500", "amc12"]
-# Conclusions rest on the larger benchmark; AIME (30 problems) and AMC12 (83 problems) are
-# noisy at this scale (matches every eval_*.sh, which all run math500,aime24,aime25,amc12 --
-# P-ALIGN's own suite, not Spectral's olympiadbench/gpqa).
+# math500 is primary: AIME (30 problems) and AMC12 (83 problems) are too small to be reliable alone.
 PRIMARY_BENCHMARKS = {"math500"}
 
 
@@ -52,9 +50,8 @@ def format_table(models: dict[str, dict[str, float]]) -> str:
             + (f"{sum(primary) / len(primary):.1%}" if primary else "-") + " |"
         )
 
-    # Group by track (e.g. "qwen3-1.7b") so vanilla-vs-spectral/prucot deltas are computed
-    # per model line -- tags are always "<method>-<track>" (see every eval_*.sh's TAG=),
-    # never bare "vanilla"/"spectral", so a single global lookup would never match.
+    # Group by track so vanilla-vs-spectral/prucot deltas are computed per model line
+    # (tags are always "<method>-<track>", never bare "vanilla"/"spectral").
     tracks: dict[str, dict[str, str]] = {}
     for tag in models:
         parsed = split_tag(tag)

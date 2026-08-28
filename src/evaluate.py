@@ -1,16 +1,9 @@
 """Phase 6: generate with vLLM and score both checkpoints on the paper's benchmarks.
 
-    python src/evaluate.py --model checkpoints/vanilla --benchmarks all
-    python src/evaluate.py --model checkpoints/spectral --benchmarks math500,aime24
     python src/evaluate.py --rescore results/spectral/raw/math500.jsonl   # no GPU needed
 
-Each run gets its own subtree under --results-dir, keyed by --tag, so different
-tracks/checkpoints never mix files in one flat directory:
-
-    results/<tag>/summary.json
-    results/<tag>/raw/<benchmark>.jsonl
-
-Raw generations are persisted so scoring can be revised without regenerating.
+Raw generations are persisted under --results-dir/<tag>/raw/ so scoring can be revised
+without regenerating.
 """
 
 import argparse
@@ -26,10 +19,8 @@ from benchmarks import BENCHMARKS
 def build_prompts(model_path: str, records: list[dict], config: dict) -> list[str]:
     """Wrap each benchmark's plain instruction into a chat-templated prompt when requested.
 
-    Base models (chat_template unset, e.g. Qwen3-0.6B-Base) get the raw instruction text
-    unchanged. Instruct/hybrid-thinking models (Qwen3-8B, Qwen2.5-7B-Instruct) need their own
-    chat template so generation actually starts from "<|im_start|>assistant\n" the way they
-    were trained/aligned, instead of continuing raw text as a base model would.
+    Instruct/hybrid-thinking models need the chat template so generation starts from the
+    assistant turn as trained, rather than continuing raw text like a base model.
     """
     if not config.get("chat_template"):
         return [record["prompt"] for record in records]
@@ -54,9 +45,8 @@ def generate(model_path: str, records: list[dict], config: dict) -> list[list[di
 
     prompts = build_prompts(model_path, records, config)
 
-    # lora_adapter: model_path is an adapter-only checkpoint (--no-lora-merge in train_sft.py)
-    # saved on top of config["base_model"] — load the base weights once via vLLM's native LoRA
-    # support instead of a second merged ~16GB copy per model (see plans/reports handoff).
+    # lora_adapter: model_path is adapter-only (--no-lora-merge); load base weights once via
+    # vLLM's native LoRA support instead of a ~16GB merged copy per model.
     if config.get("lora_adapter"):
         from vllm.lora.request import LoRARequest
 
@@ -124,8 +114,6 @@ def score_file(path: Path) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    # --config is optional: the shell launchers (scripts/<family>/eval/eval_<model>.sh) pass every setting as a CLI
-    # flag instead of a yaml. When both are given, CLI flags override the yaml.
     parser.add_argument("--config")
     parser.add_argument("--model", help="checkpoint path")
     parser.add_argument("--tag", help="short name used in output filenames (default: dir name)")
@@ -174,8 +162,6 @@ def main() -> None:
     tag = args.tag or Path(args.model).name
     names = list(BENCHMARKS) if args.benchmarks == "all" else args.benchmarks.split(",")
 
-    # everything for this run lives under one subtree, instead of a flat results/ dir
-    # mixing raw generations and summaries from every tag/track together.
     run_dir = Path(config["results_dir"]) / tag
     raw_dir = run_dir / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)

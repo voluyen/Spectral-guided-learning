@@ -3,25 +3,10 @@ adapted from Pru-CoT/LLM_prune_threshold.py).
 
 Steps below the importance threshold from prucot_weight.py (Eq. 3) become pruning candidates;
 a scale-matched LLM pruning agent then decides, per candidate, whether removing it would break
-the reasoning chain's logical coherence -- using non-candidate steps as semantic anchors. The
-output is a plain {id, input_ids, loss_mask} jsonl, all-ones over the *shortened* response:
-unlike spectral (masks the loss but keeps every token in context), Pru-CoT genuinely deletes
-pruned steps' text, matching the paper's own reconstruct_to_llama_factory_format. The output
-format matches build_masks.py's, so train_sft.py/masked_loss.py/data_collator.py need no
-changes -- the two baselines only differ in how their training jsonl gets built.
-
-The weights parquet from prucot_weight.py only scores the chain-of-thought portion of each
-record (everything before its "</think>" tag -- see probe_scope/solution_step_start in
-prucot_weight.py/segmentation.py). n_scored below (each record's weights length) tells this
-phase where the solution y begins, so the LLM prompt's "final solution" slot gets the real
-deepseek_attempt text and the pruning table only ever shows chain-of-thought steps -- the
-solution is never a candidate and always reproduced verbatim. Records with no "</think>" tag
-(n_scored == total steps) fall back to protecting only the first and last scored step (see
-candidate_step_indices).
-
-    python src/prucot_prune.py --data-path data/qwen3-8b/train-s1k-segmented.jsonl \
-        --weights-path data/qwen3-8b/prucot-weights.parquet --tokenizer Qwen/Qwen3-8B \
-        --pruning-agent Qwen/Qwen2.5-7B-Instruct --output-path data/qwen3-8b/train-prucot.jsonl
+the reasoning chain's logical coherence. Unlike spectral (masks the loss but keeps every token
+in context), Pru-CoT genuinely deletes pruned steps' text and re-tokenizes the shortened
+response, but still emits the same {id, input_ids, loss_mask} jsonl shape as build_masks.py, so
+train_sft.py/masked_loss.py/data_collator.py need no changes.
 
 --config points at a yaml with the same fields as a fallback/override base; CLI flags always
 win when both are given.
@@ -103,10 +88,8 @@ def median_gate(weights: list[float], threshold: float) -> bool:
 
 def candidate_step_indices(weights: list[float], threshold: float) -> list[int]:
     """Steps eligible for LLM-guided pruning: weight below tau (Eq. 3), excluding the first and
-    last step of the scored range as structural anchors. The first usually carries the
-    response's opening "<think>" tag; protecting the last is a uniform safety margin regardless
-    of whether a "</think>" split was found upstream (when it was, every entry here is already
-    pure chain-of-thought -- the real solution was excluded before this function ever sees it)."""
+    last step of the scored range as structural anchors (first often holds the opening "<think>"
+    tag; last is a uniform safety margin regardless of whether a "</think>" split was found)."""
     if len(weights) < 3:
         return []
     last = len(weights) - 1
@@ -170,10 +153,9 @@ def emit_prucot_record(
     student_tokenizer=None,
     step_texts: list[str] | None = None,
 ) -> dict:
-    """{id, input_ids, loss_mask} -- identical shape to build_masks.py's output, so train_sft.py
-    needs no changes. Unpruned records reuse input_ids as-is; pruned ones are re-tokenized from
-    the shortened response (prompt tokens never change). `prune_indices` index into
-    step_texts[:n_scored]; the solution tail (step_texts[n_scored:]) is never touched."""
+    """{id, input_ids, loss_mask}, same shape as build_masks.py's output (so train_sft.py needs
+    no changes). `prune_indices` index into step_texts[:n_scored]; the solution tail is never
+    touched."""
     prompt_len = record["response_token_span"][0]
     if prune_indices:
         kept_thinking = reconstruct_pruned_text(step_texts[:n_scored], prune_indices)
@@ -260,8 +242,7 @@ def main() -> None:
         n_scored = len(weights)
         thinking_steps = step_texts[:n_scored]
         solution_tail = step_texts[n_scored:]
-        # The real solution when a "</think>" split was found; otherwise (no split) fall back
-        # to the CoT's own last scored step as a rough proxy.
+        # Real solution if a "</think>" split was found; otherwise fall back to the last scored CoT step.
         solution_text = "".join(solution_tail) if solution_tail else (thinking_steps[-1] if thinking_steps else "")
         virtual_ids = build_virtual_id_map(candidates)
         user_prompt = USER_PROMPT_TEMPLATE.format(
