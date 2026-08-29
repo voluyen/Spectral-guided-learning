@@ -2,13 +2,19 @@
 # Phase 5: masked SFT -- VANILLA baseline, Qwen3-4B-Instruct-2507 track (LoRA).
 set -euo pipefail
 
-GPUS=(4 5 6 7)
+# GPU set: override from the environment without editing this file, e.g. `GPUS="6 7"` or
+# `GPUS="6,7"`. Accepts space- or comma-separated ids.
+_gpus_in="${GPUS:-4 5 6 7}"
+read -r -a GPUS <<< "${_gpus_in//,/ }"
 export CUDA_VISIBLE_DEVICES=$(IFS=,; echo "${GPUS[*]}")
 export TOKENIZERS_PARALLELISM=false
 export HF_HUB_DISABLE_SYMLINKS_WARNING=1
+# DeepSpeed JIT-compiles cpu_adam via the system nvcc for ZeRO offload; skip its hard CUDA
+# version-match check when nvcc's CUDA differs from torch's build CUDA (see docs/server-runbook.md).
+export DS_SKIP_CUDA_CHECK=1
 
 MASTER_ADDR=localhost
-MASTER_PORT=66$(($RANDOM%90+10))
+MASTER_PORT=$((20000 + RANDOM % 10000))
 NNODES=1
 NODE_RANK=0
 GPUS_PER_NODE=${#GPUS[@]}

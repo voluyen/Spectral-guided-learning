@@ -6,6 +6,7 @@ only the loss mask in the dataset differs. Settings come from CLI flags or --con
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 import torch
@@ -91,7 +92,51 @@ def build_training_arguments(config: dict) -> TrainingArguments:
     )
 
 
+def log_launch_topology() -> None:
+    """Print the torchrun/DeepSpeed process topology so a "training only ran on 1 GPU"
+    symptom is diagnosable straight from the log: whether WORLD_SIZE is really > 1 and which
+    physical GPU each rank maps to. Also aborts early when the launcher started more local
+    ranks than there are visible GPUs -- otherwise every rank silently piles onto one GPU.
+
+    torchrun sets these env vars before Python starts; run without torchrun (e.g. --smoke)
+    they default to a single-process world, which is fine.
+    """
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    rank = int(os.environ.get("RANK", "0"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", "1"))
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES", "<unset: all>")
+    devices = [d for d in visible.split(",") if d] if visible != "<unset: all>" else []
+    physical = devices[local_rank] if local_rank < len(devices) else str(local_rank)
+    # device_count() before is_available(): a failed is_available() init poisons a later
+    # device_count() to 0, so count first to report the real number of visible GPUs.
+    n_visible = torch.cuda.device_count()
+    available = torch.cuda.is_available()
+    print(
+        f"[launch] rank {rank}/{world_size} local_rank {local_rank} -> physical GPU {physical} "
+        f"| CUDA_VISIBLE_DEVICES={visible} | is_available={available} device_count={n_visible}",
+        flush=True,
+    )
+    if not available:
+        # build_training_arguments() falls back to use_cpu=True when CUDA is unavailable, so a
+        # driver/torch mismatch would silently train on CPU instead of erroring. Make it loud.
+        print(
+            f"[launch] rank {rank}: WARNING torch.cuda.is_available() is False -- training would fall "
+            f"back to CPU. Check the driver vs torch CUDA build (nvidia-smi 'CUDA Version' must be >= "
+            f"torch's) before trusting this run.",
+            flush=True,
+        )
+    elif n_visible < local_world_size:
+        raise SystemExit(
+            f"[launch] rank {rank}: torchrun started {local_world_size} process(es) on this node "
+            f"but torch sees only {n_visible} GPU(s) (CUDA_VISIBLE_DEVICES={visible}). Every rank "
+            f"would run on the same GPU. Set GPUS so its length equals the number of GPUs you want "
+            f"(e.g. GPUS=\"6 7\" for two), then relaunch."
+        )
+
+
 def main() -> None:
+    log_launch_topology()
     parser = argparse.ArgumentParser()
     # --config is an optional yaml base; CLI flags below override it when both are given.
     parser.add_argument("--config")
@@ -219,32 +264,39 @@ def main() -> None:
         processing_class=tokenizer,
     )
     result = trainer.train()
+
+    # Gate every checkpoint write to rank 0. ZeRO-2 replicates params across ranks (only the
+    # optimizer state is sharded), so rank 0 holds the full trained weights; without this guard
+    # each rank writes the same files to the same dir at once -- a concurrent-write race that can
+    # truncate/corrupt the checkpoint under multi-GPU.
     if config.get("use_lora") and config.get("lora_merge", True):
         # merge adapters into the base weights so output_dir is a normal full checkpoint,
         # loadable by evaluate.py/vLLM exactly like a non-LoRA run.
-        trainer.model.merge_and_unload().save_pretrained(config["output_dir"])
+        if trainer.is_world_process_zero():
+            trainer.model.merge_and_unload().save_pretrained(config["output_dir"])
     else:
         # --no-lora-merge: trainer.save_model() on a PEFT model saves adapter weights only
         # (tens-hundreds of MB) instead of a full ~16GB checkpoint; evaluate.py loads it as a
-        # LoRA adapter on top of the base model.
+        # LoRA adapter on top of the base model. save_model() gates to rank 0 internally.
         trainer.save_model(config["output_dir"])
-    tokenizer.save_pretrained(config["output_dir"])
 
-    # evidence for the paper's "fewer supervised tokens" claim, recorded next to the checkpoint
-    (Path(config["output_dir"]) / "run-summary.json").write_text(
-        json.dumps(
-            {
-                "data_path": config["data_path"],
-                "samples": len(dataset),
-                "supervised_tokens": dataset.supervised_token_count(),
-                "epochs": config["epochs"],
-                "seed": config.get("seed", 42),
-                "train_runtime_s": result.metrics.get("train_runtime"),
-                "final_train_loss": result.metrics.get("train_loss"),
-            },
-            indent=2,
+    if trainer.is_world_process_zero():
+        tokenizer.save_pretrained(config["output_dir"])
+        # evidence for the paper's "fewer supervised tokens" claim, recorded next to the checkpoint
+        (Path(config["output_dir"]) / "run-summary.json").write_text(
+            json.dumps(
+                {
+                    "data_path": config["data_path"],
+                    "samples": len(dataset),
+                    "supervised_tokens": dataset.supervised_token_count(),
+                    "epochs": config["epochs"],
+                    "seed": config.get("seed", 42),
+                    "train_runtime_s": result.metrics.get("train_runtime"),
+                    "final_train_loss": result.metrics.get("train_loss"),
+                },
+                indent=2,
+            )
         )
-    )
 
 
 if __name__ == "__main__":
